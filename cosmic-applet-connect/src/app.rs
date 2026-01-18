@@ -330,6 +330,8 @@ pub struct ConnectApplet {
     media_info: Option<MediaInfo>,
     /// Whether media info is loading
     media_loading: bool,
+    /// User's explicit player selection (overrides D-Bus value until view is closed)
+    media_selected_player: Option<String>,
 
     // SendTo submenu state
     /// Device ID for SendTo view
@@ -399,6 +401,7 @@ impl Application for ConnectApplet {
             media_device_name: None,
             media_info: None,
             media_loading: false,
+            media_selected_player: None,
             // SendTo state
             sendto_device_id: None,
             sendto_device_type: None,
@@ -1088,6 +1091,7 @@ impl Application for ConnectApplet {
                 self.media_device_name = device_name;
                 self.media_info = None;
                 self.media_loading = true;
+                self.media_selected_player = None;
                 self.view_mode = ViewMode::MediaControls;
 
                 if let Some(conn) = &self.dbus_connection {
@@ -1103,17 +1107,33 @@ impl Application for ConnectApplet {
                 self.media_device_name = None;
                 self.media_info = None;
                 self.media_loading = false;
+                self.media_selected_player = None;
             }
             Message::MediaInfoLoaded(info) => {
                 self.media_loading = false;
-                self.media_info = info;
+                // Preserve user's explicit player selection if set
+                self.media_info = match (info, &self.media_selected_player) {
+                    (Some(mut media_info), Some(selected)) => {
+                        if media_info.players.contains(selected) {
+                            media_info.current_player = selected.clone();
+                        }
+                        Some(media_info)
+                    }
+                    (info, _) => info,
+                };
             }
             Message::MediaPlayPause => {
                 if let (Some(conn), Some(device_id)) =
                     (&self.dbus_connection, &self.media_device_id)
                 {
+                    let ensure_player = self.media_selected_player.clone();
                     return cosmic::app::Task::perform(
-                        media_action_async(conn.clone(), device_id.clone(), MediaAction::PlayPause),
+                        media_action_async(
+                            conn.clone(),
+                            device_id.clone(),
+                            MediaAction::PlayPause,
+                            ensure_player,
+                        ),
                         cosmic::Action::App,
                     );
                 }
@@ -1122,8 +1142,14 @@ impl Application for ConnectApplet {
                 if let (Some(conn), Some(device_id)) =
                     (&self.dbus_connection, &self.media_device_id)
                 {
+                    let ensure_player = self.media_selected_player.clone();
                     return cosmic::app::Task::perform(
-                        media_action_async(conn.clone(), device_id.clone(), MediaAction::Next),
+                        media_action_async(
+                            conn.clone(),
+                            device_id.clone(),
+                            MediaAction::Next,
+                            ensure_player,
+                        ),
                         cosmic::Action::App,
                     );
                 }
@@ -1132,8 +1158,14 @@ impl Application for ConnectApplet {
                 if let (Some(conn), Some(device_id)) =
                     (&self.dbus_connection, &self.media_device_id)
                 {
+                    let ensure_player = self.media_selected_player.clone();
                     return cosmic::app::Task::perform(
-                        media_action_async(conn.clone(), device_id.clone(), MediaAction::Previous),
+                        media_action_async(
+                            conn.clone(),
+                            device_id.clone(),
+                            MediaAction::Previous,
+                            ensure_player,
+                        ),
                         cosmic::Action::App,
                     );
                 }
@@ -1146,11 +1178,13 @@ impl Application for ConnectApplet {
                     if let Some(ref mut info) = self.media_info {
                         info.volume = volume;
                     }
+                    let ensure_player = self.media_selected_player.clone();
                     return cosmic::app::Task::perform(
                         media_action_async(
                             conn.clone(),
                             device_id.clone(),
                             MediaAction::SetVolume(volume),
+                            ensure_player,
                         ),
                         cosmic::Action::App,
                     );
@@ -1160,6 +1194,8 @@ impl Application for ConnectApplet {
                 if let (Some(conn), Some(device_id)) =
                     (&self.dbus_connection, &self.media_device_id)
                 {
+                    // Track user's explicit selection (persists until view is closed)
+                    self.media_selected_player = Some(player.clone());
                     // Update local state immediately
                     if let Some(ref mut info) = self.media_info {
                         info.current_player = player.clone();
@@ -1169,6 +1205,7 @@ impl Application for ConnectApplet {
                             conn.clone(),
                             device_id.clone(),
                             MediaAction::SelectPlayer(player),
+                            None, // SelectPlayer doesn't need ensure_player
                         ),
                         cosmic::Action::App,
                     );
@@ -2007,7 +2044,9 @@ impl ConnectApplet {
                     .spacing(12)
                     .align_x(Alignment::Center),
             )
-            .center(Length::Fill)
+            .width(Length::Fill)
+            .align_x(Alignment::Center)
+            .padding(24)
             .into()
         } else if let Some(ref info) = self.media_info {
             if info.players.is_empty() {
@@ -2021,7 +2060,9 @@ impl ConnectApplet {
                     .spacing(12)
                     .align_x(Alignment::Center),
                 )
-                .center(Length::Fill)
+                .width(Length::Fill)
+                .align_x(Alignment::Center)
+                .padding(24)
                 .into()
             } else {
                 // Show media controls
@@ -2038,7 +2079,9 @@ impl ConnectApplet {
                 .spacing(12)
                 .align_x(Alignment::Center),
             )
-            .center(Length::Fill)
+            .width(Length::Fill)
+            .align_x(Alignment::Center)
+            .padding(24)
             .into()
         };
 
@@ -2053,7 +2096,15 @@ impl ConnectApplet {
         // Player selector (if multiple players)
         let player_selector: Element<Message> = if info.players.len() > 1 {
             let players: Vec<String> = info.players.clone();
-            let selected_idx = players.iter().position(|p| p == &info.current_player);
+            // Find selected index, defaulting to first player if current_player is empty or not found
+            let selected_idx = if info.current_player.is_empty() {
+                Some(0)
+            } else {
+                players
+                    .iter()
+                    .position(|p| p == &info.current_player)
+                    .or(Some(0))
+            };
             let players_for_dropdown: Vec<String> = players.clone();
 
             widget::container(
@@ -2184,9 +2235,9 @@ impl ConnectApplet {
             controls_container,
             widget::vertical_space().height(Length::Fixed(16.0)),
             volume_row,
-            widget::vertical_space(),
         ]
         .spacing(4)
+        .padding([0, 0, 16, 0]) // Add bottom padding
         .width(Length::Fill)
         .into()
     }
@@ -3553,8 +3604,9 @@ async fn fetch_media_info_async(conn: Arc<Mutex<Connection>>, device_id: String)
     let album = proxy.album().await.unwrap_or_default();
     let is_playing = proxy.is_playing().await.unwrap_or(false);
     let volume = proxy.volume().await.unwrap_or(0);
-    let position = proxy.position().await.unwrap_or(0);
-    let length = proxy.length().await.unwrap_or(0);
+    // D-Bus returns i32 for position/length, convert to i64
+    let position = proxy.position().await.unwrap_or(0) as i64;
+    let length = proxy.length().await.unwrap_or(0) as i64;
     // Note: canGoNext/canGoPrevious are per-player properties not exposed on the main interface.
     // We default to true to allow actions; the phone will handle if unsupported.
     let can_next = true;
@@ -3576,10 +3628,12 @@ async fn fetch_media_info_async(conn: Arc<Mutex<Connection>>, device_id: String)
 }
 
 /// Execute a media control action on a device.
+/// If `ensure_player` is provided, the player will be selected before performing the action.
 async fn media_action_async(
     conn: Arc<Mutex<Connection>>,
     device_id: String,
     action: MediaAction,
+    ensure_player: Option<String>,
 ) -> Message {
     let conn = conn.lock().await;
     let path = format!(
@@ -3603,6 +3657,14 @@ async fn media_action_async(
             return Message::MediaActionResult(Err("Failed to build proxy path".to_string()));
         }
     };
+
+    // If a specific player is requested, ensure it's selected first
+    if let Some(ref player) = ensure_player {
+        if let Err(e) = proxy.set_player(player).await {
+            tracing::warn!("Failed to set player before action: {}", e);
+            // Continue anyway - the action might still work
+        }
+    }
 
     let result = match action {
         MediaAction::PlayPause => proxy.send_action("PlayPause").await,

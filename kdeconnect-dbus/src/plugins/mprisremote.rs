@@ -20,7 +20,7 @@ pub trait MprisRemote {
     fn player_list(&self) -> zbus::Result<Vec<String>>;
 
     /// Get the currently selected player name.
-    #[zbus(property)]
+    #[zbus(property, name = "player")]
     fn player(&self) -> zbus::Result<String>;
 
     /// Check if the current player is playing.
@@ -28,27 +28,29 @@ pub trait MprisRemote {
     fn is_playing(&self) -> zbus::Result<bool>;
 
     /// Get the current volume (0-100).
-    #[zbus(property)]
+    #[zbus(property, name = "volume")]
     fn volume(&self) -> zbus::Result<i32>;
 
     /// Get the track length in milliseconds.
-    #[zbus(property)]
-    fn length(&self) -> zbus::Result<i64>;
+    /// Note: D-Bus returns int32, converted to i64 for consistency with position calculations.
+    #[zbus(property, name = "length")]
+    fn length(&self) -> zbus::Result<i32>;
 
     /// Get the current playback position in milliseconds.
-    #[zbus(property)]
-    fn position(&self) -> zbus::Result<i64>;
+    /// Note: D-Bus returns int32, converted to i64 for consistency with position calculations.
+    #[zbus(property, name = "position")]
+    fn position(&self) -> zbus::Result<i32>;
 
     /// Get the current track title.
-    #[zbus(property)]
+    #[zbus(property, name = "title")]
     fn title(&self) -> zbus::Result<String>;
 
     /// Get the current track artist.
-    #[zbus(property)]
+    #[zbus(property, name = "artist")]
     fn artist(&self) -> zbus::Result<String>;
 
     /// Get the current track album.
-    #[zbus(property)]
+    #[zbus(property, name = "album")]
     fn album(&self) -> zbus::Result<String>;
 
     /// Check if the player can seek.
@@ -59,15 +61,15 @@ pub trait MprisRemote {
     fn seek(&self, offset: i32) -> zbus::Result<()>;
 
     /// Set the playback position in milliseconds (writable property).
-    #[zbus(property)]
-    fn set_position(&self, position: i64) -> zbus::Result<()>;
+    #[zbus(property, name = "position")]
+    fn set_position(&self, position: i32) -> zbus::Result<()>;
 
     /// Set the volume (0-100) (writable property).
-    #[zbus(property)]
+    #[zbus(property, name = "volume")]
     fn set_volume(&self, volume: i32) -> zbus::Result<()>;
 
     /// Select a player by name (writable property).
-    #[zbus(property)]
+    #[zbus(property, name = "player")]
     fn set_player(&self, player: &str) -> zbus::Result<()>;
 
     /// Request an updated player list from the device.
