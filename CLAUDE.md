@@ -87,7 +87,8 @@ cosmic-connect-applet/
 │           ├── notifications.rs # Notifications plugin
 │           ├── ping.rs          # Ping plugin
 │           ├── share.rs         # File/URL sharing plugin
-│           └── sms.rs           # SMS/conversations plugin
+│           ├── sms.rs           # SMS/conversations plugin
+│           └── telephony.rs     # Telephony plugin (call notifications)
 │
 ├── docs/                         # Additional documentation
 │   ├── CHANGELOG.md             # Development history
@@ -233,6 +234,7 @@ KDE Connect exposes these key D-Bus interfaces:
 | `org.kde.kdeconnect.device.share` | (same + /share) | File/URL sharing |
 | `org.kde.kdeconnect.device.sms` | (same + /sms) | Request SMS conversations |
 | `org.kde.kdeconnect.device.conversations` | `/modules/kdeconnect/devices/<id>` | SMS conversation data and signals |
+| `org.kde.kdeconnect.device.telephony` | (same + /telephony) | Incoming/missed call notifications |
 
 ### D-Bus Property Naming
 
@@ -345,13 +347,13 @@ The applet uses COSMIC's configuration system (`cosmic_config`) for persistent s
 
 ### Config Location
 
-Settings are stored in `~/.config/cosmic/com.github.cosmic-connect-applet/v2/`
+Settings are stored in `~/.config/cosmic/com.github.cosmic-connect-applet/v3/`
 
 ### Config Struct
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, CosmicConfigEntry, PartialEq, Eq)]
-#[version = 2]
+#[version = 3]
 pub struct Config {
     pub show_battery_percentage: bool,       // Show battery % in device list
     pub show_offline_devices: bool,          // Show paired but offline devices
@@ -360,6 +362,9 @@ pub struct Config {
     pub sms_notifications: bool,             // Enable SMS desktop notifications
     pub sms_notification_show_content: bool, // Show message content (privacy)
     pub sms_notification_show_sender: bool,  // Show sender name (privacy)
+    pub call_notifications: bool,            // Enable call desktop notifications
+    pub call_notification_show_number: bool, // Show phone number (privacy)
+    pub call_notification_show_name: bool,   // Show contact name (privacy)
 }
 ```
 
@@ -741,6 +746,44 @@ The SMS notification subscription is active when:
 
 The subscription automatically reconnects on D-Bus disconnection.
 
+## Call Notifications
+
+The applet shows desktop notifications for incoming and missed phone calls.
+
+### D-Bus Signal
+
+The telephony plugin emits a `callReceived` signal with three string arguments:
+- `event` - "callReceived" for incoming call, "missedCall" for missed call
+- `phone_number` - The caller's phone number
+- `contact_name` - Contact name if available, otherwise same as phone number
+
+### Implementation
+
+1. **D-Bus Signal Subscription**: A separate subscription (`call_notification_subscription`) listens for `callReceived` signals from `org.kde.kdeconnect.device.telephony`.
+
+2. **Device Name Resolution**: The device name is fetched via `DeviceProxy` to show which phone received the call.
+
+3. **Privacy Settings**: Users can control notification content:
+   - `call_notifications` - Master toggle for call notifications
+   - `call_notification_show_name` - Show/hide contact name
+   - `call_notification_show_number` - Show/hide phone number
+
+### Notification Display
+
+```rust
+notify_rust::Notification::new()
+    .summary(&summary)  // "Incoming Call" or "Incoming call from {name}"
+    .body(&device_name) // Which device received the call
+    .icon("call-start-symbolic")  // or "call-missed-symbolic" for missed
+    .appname("COSMIC Connect")
+    .urgency(notify_rust::Urgency::Critical)  // Incoming calls are high priority
+    .show()
+```
+
+### Limitation: Mute Ringer
+
+The KDE Connect daemon handles ringer muting internally via KNotification actions. There's no D-Bus method exposed to mute the ringer programmatically from external applications. This would require upstream KDE Connect changes.
+
 ## Media Controls Implementation
 
 ### D-Bus Interface
@@ -844,7 +887,6 @@ Potential features to implement in future development:
 ### Additional KDE Connect Plugins
 - **Run Commands** - Execute predefined commands on the phone
 - **Mousepad/Keyboard Input** - Send mouse movements and keyboard input to phone
-- **Telephony** - Show incoming call notifications, mute ringer
 - **Presenter** - Control presentations remotely
 - **Screen Sharing** - View phone screen (if supported)
 
