@@ -763,9 +763,9 @@ The mprisremote interface exposes these readable properties:
 - `playerList` - List of available media players on the device
 - `player` - Currently selected player name
 - `isPlaying` - Whether playback is active
-- `volume` - Current volume (0-100)
-- `length` - Track length in milliseconds
-- `position` - Current playback position in milliseconds
+- `volume` - Current volume (0-100), type: `int32`
+- `length` - Track length in milliseconds, type: `int32`
+- `position` - Current playback position in milliseconds, type: `int32`
 - `title`, `artist`, `album` - Current track metadata
 - `canSeek` - Whether the player supports seeking
 
@@ -774,7 +774,41 @@ Writable properties (set via D-Bus property setters):
 - `position` - Seek to position
 - `player` - Select active player
 
+**Important:** All properties must have explicit `name = "..."` attributes in the zbus proxy definition to ensure correct D-Bus property name mapping:
+
+```rust
+#[zbus(property, name = "volume")]
+fn volume(&self) -> zbus::Result<i32>;
+
+#[zbus(property, name = "length")]
+fn length(&self) -> zbus::Result<i32>;  // D-Bus returns int32, not int64
+```
+
 **Note:** `canGoNext`, `canGoPrevious`, `canPlay`, `canPause` are per-player properties not exposed on the main interface. The UI defaults these to `true` and lets the phone handle unsupported actions.
+
+### Player Selection Persistence
+
+When the user selects a player from the dropdown, the selection must be explicitly applied before each media action. The D-Bus `sendAction` method operates on whatever player the daemon considers "current", which may not reflect the user's recent selection due to timing/sync issues.
+
+The solution is to track the user's selection locally (`media_selected_player`) and call `set_player()` before every action:
+
+```rust
+async fn media_action_async(
+    conn: Arc<Mutex<Connection>>,
+    device_id: String,
+    action: MediaAction,
+    ensure_player: Option<String>,  // User's selected player
+) -> Message {
+    // ...
+    if let Some(ref player) = ensure_player {
+        proxy.set_player(player).await.ok();  // Ensure correct player before action
+    }
+    // Then perform the action
+    proxy.send_action("PlayPause").await?;
+}
+```
+
+This ensures playback controls affect the player the user actually selected.
 
 ## Known Issues
 
