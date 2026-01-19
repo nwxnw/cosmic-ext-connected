@@ -235,28 +235,34 @@ fn build_status_row<'a>(device: &'a DeviceInfo) -> Element<'a, Message> {
     .padding(8);
 
     // Battery status (right-aligned) - percentage text + icon
+    // KDE Connect returns -1 when battery level is unknown, so filter those out
     let battery_element: Element<Message> =
         if let (Some(level), Some(charging)) = (device.battery_level, device.battery_charging) {
-            let icon_name = get_battery_icon_name(level, charging);
-            let battery_content = row![
-                text(format!("{}%", level)).size(12),
-                icon::from_name(icon_name).size(24),
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center);
-            let tooltip_text = if charging {
-                fl!("tooltip-battery-charging", level = level)
+            if level >= 0 {
+                let icon_name = get_battery_icon_name(level, charging);
+                let battery_content = row![
+                    text(format!("{}%", level)).size(12),
+                    icon::from_name(icon_name).size(24),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center);
+                let tooltip_text = if charging {
+                    fl!("tooltip-battery-charging", level = level)
+                } else {
+                    fl!("tooltip-battery", level = level)
+                };
+                tooltip(
+                    battery_content,
+                    text(tooltip_text).size(11),
+                    tooltip::Position::Bottom,
+                )
+                .gap(4)
+                .padding(8)
+                .into()
             } else {
-                fl!("tooltip-battery", level = level)
-            };
-            tooltip(
-                battery_content,
-                text(tooltip_text).size(11),
-                tooltip::Position::Bottom,
-            )
-            .gap(4)
-            .padding(8)
-            .into()
+                // Battery level is -1 (unknown) - don't show
+                widget::Space::new(Length::Shrink, Length::Shrink).into()
+            }
         } else {
             // No battery info available - empty space
             widget::Space::new(Length::Shrink, Length::Shrink).into()

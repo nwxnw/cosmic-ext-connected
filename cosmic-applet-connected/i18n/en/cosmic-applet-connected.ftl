@@ -136,6 +136,9 @@ loading-messages = Loading messages...
 no-messages = No messages
 no-messages-conversation = No messages in this conversation
 sms-will-appear = SMS messages will appear here
+load-older-messages = Load older messages
+loading-older = Loading...
+load-more-conversations = Load more conversations
 
 # New message
 new-message = New Message
@@ -172,6 +175,7 @@ clipboard-sent = Clipboard sent!
 clipboard-failed = Failed to send clipboard
 sms-sent = Message sent!
 sms-failed = Failed to send message
+group-sms-not-supported = Group messaging not supported
 pairing-accepted = Pairing accepted
 pairing-rejected = Pairing rejected
 unpaired = Unpaired from device

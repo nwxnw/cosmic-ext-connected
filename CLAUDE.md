@@ -690,21 +690,25 @@ Android SMS type values (from `msg.message_type`):
 - `5` = MESSAGE_TYPE_FAILED
 - `6` = MESSAGE_TYPE_QUEUED
 
-**Important: Message Type Inversion**
+**D-Bus Struct Field Order**
 
-The data received from KDE Connect appears to have inverted message types. In practice:
-- `MessageType::Sent` (value 2) actually represents **received** messages
-- `MessageType::Inbox` (value 1) actually represents **sent** messages
+The message struct from KDE Connect has the following field order (from `conversationmessage.h`):
+- Field 0: `eventField` (i32) - Event flags (e.g., 1 = text message)
+- Field 1: `body` (string) - Message text
+- Field 2: `addresses` (array) - List of phone numbers
+- Field 3: `date` (i64) - Timestamp
+- Field 4: `type` (i32) - **Message type** (1=Inbox/received, 2=Sent)
+- Field 5: `read` (i32) - Read status
+- Field 6: `threadID` (i64) - Conversation thread ID
+- Field 7: `uID` (i32) - Unique message ID
+- Field 8: `subID` (i64) - SIM ID
+- Field 9: `attachments` (array) - Attachment list
 
-This inversion is handled in the UI code by checking for `MessageType::Sent` when determining if a message was received:
-
+The message direction is determined by the `type` field at position 4:
 ```rust
-// Note: message_type logic appears inverted from KDE Connect data
-// MessageType::Sent actually means received, Inbox means sent
-let is_received = msg.message_type == MessageType::Sent;
+// MessageType::Inbox (1) = incoming/received, MessageType::Sent (2) = outgoing/sent
+let is_received = msg.message_type == MessageType::Inbox;
 ```
-
-The code in `app.rs` uses this inverted logic with comments explaining the situation.
 
 ## SMS Desktop Notifications
 
@@ -714,7 +718,7 @@ The applet shows desktop notifications when new SMS messages are received.
 
 1. **D-Bus Signal Subscription**: A separate subscription (`sms_notification_subscription`) listens for `conversationUpdated` signals from `org.kde.kdeconnect.device.conversations`.
 
-2. **Message Filtering**: Only incoming messages are notified (MessageType::Sent due to the type inversion described above).
+2. **Message Filtering**: Only incoming messages are notified (MessageType::Inbox).
 
 3. **Deduplication**: A `last_seen_sms: HashMap<i64, i64>` tracks the latest seen timestamp per thread_id to prevent duplicate notifications.
 
@@ -909,6 +913,28 @@ This ensures playback controls affect the player the user actually selected.
 
 ## Known Issues
 
+### Group MMS Sending Not Supported
+
+Sending messages to group MMS conversations (multiple recipients) does not work reliably with KDE Connect. This is a known upstream issue tracked at [KDE Bug 501835](https://bugs.kde.org/show_bug.cgi?id=501835).
+
+**Symptoms:**
+- Replying to a group message thread silently fails
+- The D-Bus call to `sendSms` returns success but the message never appears on the phone
+- This affects COSMIC Connected, the native KDE Connect SMS app, and kdeconnect-cli alike
+
+**Technical details:**
+- KDE Connect can receive and display group MMS messages
+- The `sendSms` D-Bus method accepts multiple addresses but the Android app doesn't process them correctly for MMS groups on many devices
+- The issue may be device/ROM-specific - some users report it works on certain Android configurations
+- MMS group identity on Android is tied to internal thread IDs, not just the participant list
+
+**Current handling:**
+- The applet detects group conversations (multiple unique recipients) and shows "Group messaging not supported" when attempting to send
+- This prevents the confusing behavior of showing an optimistic "sent" message that never actually delivers
+
+**Workaround:**
+- Use the phone directly to reply to group messages
+
 ### Conversation List Scroll Position
 
 When returning from viewing a message thread to the conversation list, the scroll position defaults to the bottom (oldest conversations) instead of the top (most recent). Multiple approaches were attempted without success:
@@ -956,7 +982,6 @@ Potential features to implement in future development:
 - Connection status indicator with reconnection handling
 - Plugin availability detection (show/hide buttons based on device capabilities)
 - Better error messages and recovery suggestions
-- Investigate message type inversion root cause (currently worked around in UI code)
 
 ## Reference Material
 

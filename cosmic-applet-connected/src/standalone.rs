@@ -19,7 +19,7 @@ use kdeconnect_dbus::{
     plugins::{
         is_address_valid, parse_conversations, parse_messages, BatteryProxy, ClipboardProxy,
         ConversationSummary, ConversationsProxy, MessageType, MprisRemoteProxy, NotificationInfo,
-        NotificationProxy, NotificationsProxy, PingProxy, ShareProxy, SmsMessage,
+        NotificationProxy, NotificationsProxy, PingProxy, ShareProxy, SmsMessage, SmsProxy,
     },
     Contact, ContactLookup, DaemonProxy, DeviceProxy,
 };
@@ -242,8 +242,8 @@ pub struct StandaloneApp {
     conversations: Vec<ConversationSummary>,
     /// Current conversation thread ID being viewed
     current_thread_id: Option<i64>,
-    /// Current conversation address (for header)
-    current_thread_address: Option<String>,
+    /// Current conversation addresses (all recipients for group messages)
+    current_thread_addresses: Option<Vec<String>>,
     /// Messages in the current thread
     messages: Vec<SmsMessage>,
     /// Whether SMS data is currently loading
@@ -323,7 +323,7 @@ impl Application for StandaloneApp {
             sms_device_name: None,
             conversations: Vec::new(),
             current_thread_id: None,
-            current_thread_address: None,
+            current_thread_addresses: None,
             messages: Vec::new(),
             sms_loading: false,
             contacts: ContactLookup::new(),
@@ -693,7 +693,7 @@ impl Application for StandaloneApp {
                 self.conversations.clear();
                 self.messages.clear();
                 self.current_thread_id = None;
-                self.current_thread_address = None;
+                self.current_thread_addresses = None;
                 self.sms_loading = false;
                 self.sms_compose_text.clear();
                 self.sms_sending = false;
@@ -713,16 +713,16 @@ impl Application for StandaloneApp {
             Message::OpenConversation(thread_id) => {
                 if let Some(conn) = &self.dbus_connection {
                     if let Some(device_id) = &self.sms_device_id {
-                        // Find the address for this thread
-                        let address = self
+                        // Find the addresses for this thread (all recipients for group messages)
+                        let addresses = self
                             .conversations
                             .iter()
                             .find(|c| c.thread_id == thread_id)
-                            .map(|c| c.address.clone());
+                            .map(|c| c.addresses.clone());
 
                         self.view_mode = ViewMode::MessageThread;
                         self.current_thread_id = Some(thread_id);
-                        self.current_thread_address = address;
+                        self.current_thread_addresses = addresses;
 
                         // Check cache first - show cached messages immediately
                         let has_cache = if let Some(cached) = self.message_cache.get(&thread_id) {
@@ -770,7 +770,7 @@ impl Application for StandaloneApp {
             Message::CloseConversation => {
                 self.view_mode = ViewMode::ConversationList;
                 self.current_thread_id = None;
-                self.current_thread_address = None;
+                self.current_thread_addresses = None;
                 self.messages.clear();
                 self.sms_compose_text.clear();
                 self.sms_sending = false;
@@ -841,19 +841,22 @@ impl Application for StandaloneApp {
                 self.sms_compose_text = text;
             }
             Message::SendSms => {
-                if let (Some(conn), Some(device_id), Some(thread_id)) = (
+                if let (Some(conn), Some(device_id), Some(thread_id), Some(addresses)) = (
                     &self.dbus_connection,
                     &self.sms_device_id,
                     self.current_thread_id,
+                    &self.current_thread_addresses,
                 ) {
                     if !self.sms_compose_text.is_empty() && !self.sms_sending {
                         let message_text = self.sms_compose_text.clone();
+                        let recipients = addresses.clone();
                         self.sms_sending = true;
                         return cosmic::app::Task::perform(
                             send_sms_async(
                                 conn.clone(),
                                 device_id.clone(),
                                 thread_id,
+                                recipients,
                                 message_text,
                             ),
                             cosmic::Action::App,
@@ -1128,7 +1131,7 @@ impl Application for StandaloneApp {
 
                 // Load contacts to resolve sender name
                 let contacts = ContactLookup::load_for_device(&device_id);
-                let sender_name = contacts.get_name_or_number(&message.address);
+                let sender_name = contacts.get_name_or_number(message.primary_address());
 
                 // Build notification based on privacy settings
                 let summary = if self.config.sms_notification_show_sender {
@@ -1529,7 +1532,7 @@ fn sms_notification_subscription() -> impl futures_util::Stream<Item = Message> 
                                                         {
                                                             tracing::debug!(
                                                                 "SMS received from {} on device {}: {}",
-                                                                sms_msg.address,
+                                                                sms_msg.primary_address(),
                                                                 device_id,
                                                                 &sms_msg.body[..sms_msg.body.len().min(30)]
                                                             );
@@ -1677,12 +1680,15 @@ impl StandaloneApp {
             };
 
             // Only show battery if setting is enabled
+            // KDE Connect returns -1 when battery level is unknown, so filter those out
             let battery_text = if self.config.show_battery_percentage {
                 match (device.battery_level, device.battery_charging) {
-                    (Some(level), Some(true)) => format!("{}% {}", level, fl!("charging")),
-                    (Some(level), Some(false)) => format!("{}%", level),
-                    (Some(level), None) => format!("{}%", level),
-                    (None, _) => String::new(),
+                    (Some(level), Some(true)) if level >= 0 => {
+                        format!("{}% {}", level, fl!("charging"))
+                    }
+                    (Some(level), Some(false)) if level >= 0 => format!("{}%", level),
+                    (Some(level), None) if level >= 0 => format!("{}%", level),
+                    _ => String::new(),
                 }
             } else {
                 String::new()
@@ -1935,7 +1941,7 @@ impl StandaloneApp {
         let thread_id = conv.thread_id;
 
         // Use contact name if available, otherwise show phone number
-        let display_name = self.contacts.get_name_or_number(&conv.address);
+        let display_name = self.contacts.get_name_or_number(conv.primary_address());
 
         // Truncate the message preview if too long (respecting char boundaries)
         let preview = if conv.last_message.chars().count() > 50 {
@@ -1982,9 +1988,12 @@ impl StandaloneApp {
     fn view_message_thread(&self) -> Element<'_, Message> {
         // Pre-compute translated strings to extend their lifetimes
         let default_unknown = fl!("unknown");
+        // Get the primary address from the addresses vector
         let address = self
-            .current_thread_address
-            .as_deref()
+            .current_thread_addresses
+            .as_ref()
+            .and_then(|addrs| addrs.first())
+            .map(|s| s.as_str())
             .unwrap_or(&default_unknown);
         // Use contact name if available for the header
         let display_name = self.contacts.get_name_or_number(address);
@@ -2093,7 +2102,7 @@ impl StandaloneApp {
         // Note: is_sent logic appears inverted, so we swap the branches
         if is_sent {
             // Actually receiving - bubble on left, with sender name above
-            let sender_name = self.contacts.get_name_or_number(&msg.address);
+            let sender_name = self.contacts.get_name_or_number(msg.primary_address());
             column![
                 text(sender_name).size(11),
                 row![bubble, widget::horizontal_space()].width(Length::Fill),
@@ -3224,38 +3233,48 @@ async fn fetch_messages_fallback(
     Message::MessagesLoaded(thread_id, messages)
 }
 
-/// Send an SMS reply to a conversation thread.
+/// Send an SMS reply to a conversation thread using the SMS plugin directly.
+/// This bypasses the daemon's conversation cache and sends to all recipients
+/// for proper group message support.
 async fn send_sms_async(
     conn: Arc<Mutex<Connection>>,
     device_id: String,
-    thread_id: i64,
+    _thread_id: i64,
+    recipients: Vec<String>,
     message: String,
 ) -> Message {
-    use zbus::zvariant::Value;
+    use zbus::zvariant::{Structure, Value};
 
     let conn = conn.lock().await;
-    let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
+    let sms_path = format!("{}/devices/{}/sms", kdeconnect_dbus::BASE_PATH, device_id);
 
-    let conversations_proxy = match ConversationsProxy::builder(&conn)
-        .path(device_path.as_str())
+    let sms_proxy = match SmsProxy::builder(&conn)
+        .path(sms_path.as_str())
         .ok()
         .map(|b| b.build())
     {
         Some(fut) => match fut.await {
             Ok(p) => p,
             Err(e) => {
-                return Message::SmsSendResult(Err(format!("Failed to create proxy: {}", e)));
+                return Message::SmsSendResult(Err(format!("Failed to create SMS proxy: {}", e)));
             }
         },
         None => {
-            return Message::SmsSendResult(Err("Failed to build proxy path".to_string()));
+            return Message::SmsSendResult(Err("Failed to build SMS proxy path".to_string()));
         }
     };
 
-    // Send with empty attachments array
+    // Format ALL addresses as D-Bus structs for group message support
+    // KDE Connect expects addresses as array of structs: a(s)
+    let addresses: Vec<Value<'_>> = recipients
+        .iter()
+        .map(|addr| Value::Structure(Structure::from((addr.as_str(),))))
+        .collect();
+
+    // Send using the SMS plugin directly with subID=-1 (default SIM)
     let empty_attachments: Vec<Value<'_>> = vec![];
-    match conversations_proxy
-        .reply_to_conversation(thread_id, &message, empty_attachments)
+    match sms_proxy
+        .send_sms(addresses, &message, empty_attachments, -1)
         .await
     {
         Ok(()) => Message::SmsSendResult(Ok("Message sent".to_string())),

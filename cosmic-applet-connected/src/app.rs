@@ -138,6 +138,8 @@ pub enum Message {
     CloseConversation,
     /// Conversations loaded from device
     ConversationsLoaded(Vec<ConversationSummary>),
+    /// User clicked "Load More" button in conversation list
+    LoadMoreConversations,
     /// Messages loaded for a specific thread
     MessagesLoaded(i64, Vec<SmsMessage>),
     /// SMS-related error occurred
@@ -146,8 +148,10 @@ pub enum Message {
     SmsComposeInput(String),
     /// Send SMS in current thread
     SendSms,
-    /// SMS send operation completed
+    /// SMS send operation completed (Ok contains the sent message body for optimistic update)
     SmsSendResult(Result<String, String>),
+    /// Delayed refresh of messages after sending (to give KDE Connect time to sync)
+    DelayedMessageRefresh(i64),
     /// Open new message compose view
     OpenNewMessage,
     /// Close new message view
@@ -162,6 +166,10 @@ pub enum Message {
     SendNewMessage,
     /// New message send result
     NewMessageSendResult(Result<String, String>),
+    /// User clicked "Load More" button to load older messages
+    LoadMoreMessages,
+    /// Older messages fetched successfully (thread_id, messages, has_more)
+    OlderMessagesLoaded(i64, Vec<SmsMessage>, bool),
 
     // Media controls
     /// Open media controls for a device
@@ -319,8 +327,10 @@ pub struct ConnectApplet {
     conversations: Vec<ConversationSummary>,
     /// Current conversation thread ID being viewed
     current_thread_id: Option<i64>,
-    /// Current conversation address (for header)
-    current_thread_address: Option<String>,
+    /// Current conversation addresses (all participants, for sending and header)
+    current_thread_addresses: Option<Vec<String>>,
+    /// Current conversation's SIM subscription ID (for MMS group messages)
+    current_thread_sub_id: Option<i64>,
     /// Messages in the current thread
     messages: Vec<SmsMessage>,
     /// Whether SMS data is currently loading
@@ -329,12 +339,22 @@ pub struct ConnectApplet {
     contacts: ContactLookup,
     /// Key to reset conversation list scroll position
     conversation_list_key: u32,
+    /// Number of conversations currently displayed (for pagination)
+    conversations_displayed: usize,
     /// Text input for composing SMS reply
     sms_compose_text: String,
     /// Whether SMS is currently being sent
     sms_sending: bool,
     /// Cache of messages by thread_id for faster loading
     message_cache: HashMap<i64, Vec<SmsMessage>>,
+
+    // Message pagination state
+    /// Number of messages currently loaded for pagination offset
+    messages_loaded_count: u32,
+    /// Whether more older messages are available
+    messages_has_more: bool,
+    /// Whether currently fetching older messages
+    messages_loading_more: bool,
 
     // New message compose state
     /// Recipient input for new message
@@ -413,14 +433,20 @@ impl Application for ConnectApplet {
             sms_device_name: None,
             conversations: Vec::new(),
             current_thread_id: None,
-            current_thread_address: None,
+            current_thread_addresses: None,
+            current_thread_sub_id: None,
             messages: Vec::new(),
             sms_loading: false,
             contacts: ContactLookup::default(),
             conversation_list_key: 0,
+            conversations_displayed: 10,
             sms_compose_text: String::new(),
             sms_sending: false,
             message_cache: HashMap::new(),
+            // Message pagination state
+            messages_loaded_count: 0,
+            messages_has_more: true,
+            messages_loading_more: false,
             // New message state
             new_message_recipient: String::new(),
             new_message_body: String::new(),
@@ -861,6 +887,7 @@ impl Application for ConnectApplet {
                         // No cache or different device - clear and fetch
                         self.sms_loading = true;
                         self.conversations.clear();
+                        self.conversations_displayed = 10;
                         self.message_cache.clear();
                         self.contacts = ContactLookup::load_for_device(&device_id);
                         tracing::info!("Opening SMS view for device: {}", device_id);
@@ -877,7 +904,8 @@ impl Application for ConnectApplet {
                 // message_cache for when user returns to SMS view
                 self.messages.clear();
                 self.current_thread_id = None;
-                self.current_thread_address = None;
+                self.current_thread_addresses = None;
+                self.current_thread_sub_id = None;
                 self.sms_loading = false;
                 self.sms_compose_text.clear();
                 self.sms_sending = false;
@@ -885,16 +913,33 @@ impl Application for ConnectApplet {
             Message::OpenConversation(thread_id) => {
                 if let Some(conn) = &self.dbus_connection {
                     if let Some(device_id) = &self.sms_device_id {
-                        // Find the conversation address for the header
-                        let address = self
+                        // Find the conversation for header info and deduplication
+                        let conversation = self
                             .conversations
                             .iter()
-                            .find(|c| c.thread_id == thread_id)
-                            .map(|c| c.address.clone());
+                            .find(|c| c.thread_id == thread_id);
+
+                        let addresses = conversation.map(|c| c.addresses.clone());
+
+                        // Pre-populate last_seen_sms with current time to prevent false notifications
+                        // when fetching existing messages in this thread.
+                        // Using current time (in milliseconds) ensures ALL existing messages
+                        // are considered "seen" - only truly new messages arriving after this
+                        // point will trigger notifications.
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0);
+                        self.last_seen_sms.insert(thread_id, now_ms);
 
                         self.current_thread_id = Some(thread_id);
-                        self.current_thread_address = address;
+                        self.current_thread_addresses = addresses;
                         self.view_mode = ViewMode::MessageThread;
+
+                        // Reset pagination state
+                        self.messages_loaded_count = 0;
+                        self.messages_has_more = true;
+                        self.messages_loading_more = false;
 
                         // Check if we have cached messages
                         let has_cache = if let Some(cached) = self.message_cache.get(&thread_id) {
@@ -942,7 +987,8 @@ impl Application for ConnectApplet {
             Message::CloseConversation => {
                 self.view_mode = ViewMode::ConversationList;
                 self.current_thread_id = None;
-                self.current_thread_address = None;
+                self.current_thread_addresses = None;
+                self.current_thread_sub_id = None;
                 self.messages.clear();
                 self.sms_compose_text.clear();
                 self.sms_sending = false;
@@ -971,10 +1017,25 @@ impl Application for ConnectApplet {
                 );
                 // Only update if we got conversations back
                 if !convs.is_empty() {
+                    // Pre-populate last_seen_sms to prevent false notifications
+                    // for messages that already exist in loaded conversations
+                    for conv in &convs {
+                        // Only update if we don't have a newer timestamp already
+                        let current = self.last_seen_sms.get(&conv.thread_id).copied();
+                        if current.is_none() || current < Some(conv.timestamp) {
+                            self.last_seen_sms.insert(conv.thread_id, conv.timestamp);
+                        }
+                    }
+
                     self.conversations = convs;
                     self.conversation_list_key = self.conversation_list_key.wrapping_add(1);
                 }
                 self.sms_loading = false;
+            }
+            Message::LoadMoreConversations => {
+                // Show 10 more conversations (up to total available)
+                self.conversations_displayed =
+                    (self.conversations_displayed + 10).min(self.conversations.len());
             }
             Message::MessagesLoaded(thread_id, msgs) => {
                 if self.current_thread_id == Some(thread_id) {
@@ -987,8 +1048,27 @@ impl Application for ConnectApplet {
                     );
                     // Only update if we got more messages than currently shown
                     if msgs.len() >= self.messages.len() {
+                        // Extract sub_id from the first message (for MMS group messaging)
+                        if let Some(first_msg) = msgs.first() {
+                            self.current_thread_sub_id = Some(first_msg.sub_id);
+                            tracing::debug!("Set sub_id to {} for thread {}", first_msg.sub_id, thread_id);
+                        }
+
+                        // Update last_seen_sms with the newest message timestamp
+                        // to prevent false notifications for messages we just loaded
+                        if let Some(newest) = msgs.iter().map(|m| m.date).max() {
+                            let current = self.last_seen_sms.get(&thread_id).copied();
+                            if current.is_none() || current < Some(newest) {
+                                self.last_seen_sms.insert(thread_id, newest);
+                            }
+                        }
+
                         // Update cache
                         self.message_cache.insert(thread_id, msgs.clone());
+                        // Update pagination state
+                        self.messages_loaded_count = msgs.len() as u32;
+                        self.messages_has_more =
+                            msgs.len() >= self.config.messages_per_page as usize;
                         self.messages = msgs;
                     }
                     self.sms_loading = false;
@@ -1003,6 +1083,66 @@ impl Application for ConnectApplet {
                     }
                 }
             }
+            Message::LoadMoreMessages => {
+                // Guard: skip if already loading or no more messages
+                if self.messages_loading_more || !self.messages_has_more {
+                    return cosmic::app::Task::none();
+                }
+
+                if let (Some(conn), Some(device_id), Some(thread_id)) = (
+                    &self.dbus_connection,
+                    &self.sms_device_id,
+                    self.current_thread_id,
+                ) {
+                    self.messages_loading_more = true;
+                    tracing::info!(
+                        "Loading more messages for thread {} from offset {}",
+                        thread_id,
+                        self.messages_loaded_count
+                    );
+                    return cosmic::app::Task::perform(
+                        fetch_older_messages_async(
+                            conn.clone(),
+                            device_id.clone(),
+                            thread_id,
+                            self.messages_loaded_count,
+                            self.config.messages_per_page,
+                        ),
+                        cosmic::Action::App,
+                    );
+                }
+            }
+            Message::OlderMessagesLoaded(thread_id, older_msgs, has_more) => {
+                self.messages_loading_more = false;
+
+                if self.current_thread_id == Some(thread_id) {
+                    self.messages_has_more = has_more;
+
+                    if !older_msgs.is_empty() {
+                        tracing::info!(
+                            "Prepending {} older messages to thread {} (had {})",
+                            older_msgs.len(),
+                            thread_id,
+                            self.messages.len()
+                        );
+
+                        // Prepend older messages (they come sorted oldest first)
+                        let mut combined = older_msgs;
+                        combined.append(&mut self.messages);
+                        self.messages = combined;
+
+                        // Update loaded count
+                        self.messages_loaded_count = self.messages.len() as u32;
+
+                        // Update cache with combined messages
+                        self.message_cache.insert(thread_id, self.messages.clone());
+                    } else {
+                        tracing::info!("No older messages returned for thread {}", thread_id);
+                        // No more messages available
+                        self.messages_has_more = false;
+                    }
+                }
+            }
             Message::SmsError(err) => {
                 tracing::error!("SMS error: {}", err);
                 self.status_message = Some(format!("SMS error: {}", err));
@@ -1012,53 +1152,133 @@ impl Application for ConnectApplet {
                 self.sms_compose_text = text;
             }
             Message::SendSms => {
-                if let (Some(conn), Some(device_id), Some(thread_id)) = (
+                tracing::info!("SendSms triggered");
+                tracing::info!(
+                    "State: conn={}, device_id={:?}, thread_id={:?}, addresses={:?}, text_empty={}, sending={}",
+                    self.dbus_connection.is_some(),
+                    self.sms_device_id,
+                    self.current_thread_id,
+                    self.current_thread_addresses,
+                    self.sms_compose_text.is_empty(),
+                    self.sms_sending
+                );
+                if let (Some(conn), Some(device_id), Some(thread_id), Some(addresses)) = (
                     &self.dbus_connection,
                     &self.sms_device_id,
                     self.current_thread_id,
+                    &self.current_thread_addresses,
                 ) {
-                    if !self.sms_compose_text.is_empty() && !self.sms_sending {
+                    if !self.sms_compose_text.is_empty() && !self.sms_sending && !addresses.is_empty() {
+                        // Check if this is a group conversation (multiple unique recipients)
+                        let mut unique_addresses = std::collections::HashSet::new();
+                        for addr in addresses {
+                            unique_addresses.insert(addr.as_str());
+                        }
+
+                        if unique_addresses.len() > 1 {
+                            // Group MMS sending is not supported by KDE Connect
+                            tracing::warn!("Group MMS sending not supported ({} recipients)", unique_addresses.len());
+                            self.status_message = Some(fl!("group-sms-not-supported"));
+                            return cosmic::app::Task::none();
+                        }
+
                         let message_text = self.sms_compose_text.clone();
+                        let recipients = addresses.clone();
+                        let sub_id = self.current_thread_sub_id.unwrap_or(-1);
                         self.sms_sending = true;
+                        tracing::info!("Dispatching send_sms_async with {} recipients, sub_id={}", recipients.len(), sub_id);
                         return cosmic::app::Task::perform(
                             send_sms_async(
                                 conn.clone(),
                                 device_id.clone(),
                                 thread_id,
+                                recipients,
                                 message_text,
+                                sub_id,
                             ),
                             cosmic::Action::App,
                         );
+                    } else {
+                        tracing::warn!("SendSms conditions not met: text_empty={}, sending={}, addresses_empty={}",
+                            self.sms_compose_text.is_empty(), self.sms_sending, addresses.is_empty());
                     }
+                } else {
+                    tracing::warn!("SendSms missing required state");
                 }
             }
             Message::SmsSendResult(result) => {
                 self.sms_sending = false;
-                match &result {
-                    Ok(msg) => {
-                        tracing::info!("SMS send result: {}", msg);
+                match result {
+                    Ok(sent_body) => {
+                        tracing::info!("SMS sent successfully");
                         self.sms_compose_text.clear();
-                        self.status_message = Some(msg.clone());
-                        // Refresh messages to show sent message
-                        if let (Some(conn), Some(device_id), Some(thread_id)) = (
-                            &self.dbus_connection,
-                            &self.sms_device_id,
-                            self.current_thread_id,
-                        ) {
-                            return cosmic::app::Task::perform(
-                                fetch_messages_async(
-                                    conn.clone(),
-                                    device_id.clone(),
-                                    thread_id,
-                                    self.config.messages_per_page,
+                        self.status_message = Some(fl!("sms-sent"));
+
+                        // Optimistic update: add the sent message to the local list immediately
+                        if let Some(thread_id) = self.current_thread_id {
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0);
+
+                            let sent_message = SmsMessage {
+                                body: sent_body,
+                                addresses: self
+                                    .current_thread_addresses
+                                    .clone()
+                                    .unwrap_or_default(),
+                                date: now_ms,
+                                message_type: kdeconnect_dbus::plugins::MessageType::Sent,
+                                read: true,
+                                thread_id,
+                                sub_id: self.current_thread_sub_id.unwrap_or(-1),
+                            };
+
+                            self.messages.push(sent_message.clone());
+
+                            // Update cache as well
+                            if let Some(cached) = self.message_cache.get_mut(&thread_id) {
+                                cached.push(sent_message);
+                            }
+
+                            // Trigger delayed refresh to sync with server
+                            // (gives KDE Connect time to process the sent message)
+                            return cosmic::app::Task::batch(vec![
+                                cosmic::app::Task::perform(
+                                    async move {
+                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                        thread_id
+                                    },
+                                    |tid| cosmic::Action::App(Message::DelayedMessageRefresh(tid)),
                                 ),
-                                cosmic::Action::App,
-                            );
+                                scrollable::snap_to(
+                                    widget::Id::new("message-thread"),
+                                    scrollable::RelativeOffset::END,
+                                ),
+                            ]);
                         }
                     }
                     Err(err) => {
                         tracing::error!("SMS send error: {}", err);
-                        self.status_message = Some(format!("Send failed: {}", err));
+                        self.status_message = Some(format!("{}: {}", fl!("sms-failed"), err));
+                    }
+                }
+            }
+            Message::DelayedMessageRefresh(thread_id) => {
+                // Refresh messages after a delay to sync sent message from server
+                if self.current_thread_id == Some(thread_id) {
+                    if let (Some(conn), Some(device_id)) =
+                        (&self.dbus_connection, &self.sms_device_id)
+                    {
+                        return cosmic::app::Task::perform(
+                            fetch_messages_async(
+                                conn.clone(),
+                                device_id.clone(),
+                                thread_id,
+                                self.config.messages_per_page,
+                            ),
+                            cosmic::Action::App,
+                        );
                     }
                 }
             }
@@ -1309,6 +1529,19 @@ impl Application for ConnectApplet {
 
             // SMS Notifications
             Message::SmsNotificationReceived(device_id, message) => {
+                // Freshness check: only notify for messages received within the last 30 seconds.
+                // This prevents false notifications when fetching historical messages and handles
+                // cross-process deduplication (COSMIC spawns multiple applet instances).
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let message_age_ms = now_ms - message.date;
+                if message_age_ms > 30_000 {
+                    // Message is older than 30 seconds, skip notification
+                    return cosmic::app::Task::none();
+                }
+
                 // Check if we've already seen this message (deduplication)
                 let last_seen = self.last_seen_sms.get(&message.thread_id).copied();
                 if last_seen.is_some() && last_seen >= Some(message.date) {
@@ -1321,7 +1554,7 @@ impl Application for ConnectApplet {
 
                 // Load contacts to resolve sender name
                 let contacts = ContactLookup::load_for_device(&device_id);
-                let sender_name = contacts.get_name_or_number(&message.address);
+                let sender_name = contacts.get_name_or_number(message.primary_address());
 
                 // Build notification based on privacy settings
                 let summary = if self.config.sms_notification_show_sender {
@@ -1341,14 +1574,19 @@ impl Application for ConnectApplet {
                 // channels to communicate between the notification callback and the main app
                 return cosmic::app::Task::perform(
                     async move {
-                        // Show the notification
-                        if let Err(e) = notify_rust::Notification::new()
-                            .summary(&summary)
-                            .body(&body)
-                            .icon("phone-symbolic")
-                            .appname("COSMIC Connected")
-                            .show()
-                        {
+                        // Use spawn_blocking to run notify_rust in a blocking context
+                        // to avoid "Cannot start a runtime from within a runtime" panics
+                        let result = tokio::task::spawn_blocking(move || {
+                            notify_rust::Notification::new()
+                                .summary(&summary)
+                                .body(&body)
+                                .icon("phone-symbolic")
+                                .appname("COSMIC Connected")
+                                .show()
+                        })
+                        .await;
+
+                        if let Ok(Err(e)) = result {
                             tracing::warn!("Failed to show SMS notification: {}", e);
                         }
                     },
@@ -1407,14 +1645,20 @@ impl Application for ConnectApplet {
                 // Show notification
                 return cosmic::app::Task::perform(
                     async move {
-                        if let Err(e) = notify_rust::Notification::new()
-                            .summary(&summary)
-                            .body(&device_name)
-                            .icon(icon)
-                            .appname("COSMIC Connected")
-                            .urgency(urgency)
-                            .show()
-                        {
+                        // Use spawn_blocking to run notify_rust in a blocking context
+                        // to avoid "Cannot start a runtime from within a runtime" panics
+                        let result = tokio::task::spawn_blocking(move || {
+                            notify_rust::Notification::new()
+                                .summary(&summary)
+                                .body(&device_name)
+                                .icon(icon)
+                                .appname("COSMIC Connected")
+                                .urgency(urgency)
+                                .show()
+                        })
+                        .await;
+
+                        if let Ok(Err(e)) = result {
                             tracing::warn!("Failed to show call notification: {}", e);
                         }
                     },
@@ -1458,7 +1702,8 @@ impl Application for ConnectApplet {
                                     .appname("COSMIC Connected")
                                     .timeout(notify_rust::Timeout::Milliseconds(5000)) // 5 second timeout
                                     .show()
-                            }).await;
+                            })
+                            .await;
 
                             if let Ok(Err(e)) = result {
                                 tracing::warn!("Failed to show file notification: {}", e);
@@ -1841,10 +2086,10 @@ impl ConnectApplet {
             .center(Length::Fill)
             .into()
         } else {
-            // Build conversation list
+            // Build conversation list (limited to conversations_displayed)
             let mut conv_column = column![].spacing(4);
-            for conv in &self.conversations {
-                let display_name = self.contacts.get_name_or_number(&conv.address);
+            for conv in self.conversations.iter().take(self.conversations_displayed) {
+                let display_name = self.contacts.get_name_or_number(conv.primary_address());
 
                 let snippet = conv.last_message.chars().take(50).collect::<String>();
                 let date_str = format_timestamp(conv.timestamp);
@@ -1871,6 +2116,29 @@ impl ConnectApplet {
                 conv_column = conv_column.push(conv_row);
             }
 
+            // Add "Load More" button if there are more conversations
+            if self.conversations_displayed < self.conversations.len() {
+                let load_more_row = row![
+                    widget::icon::from_name("go-down-symbolic").size(16),
+                    text(fl!("load-more-conversations")).size(14),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+
+                let load_more_button = widget::button::custom(
+                    widget::container(load_more_row)
+                        .padding(8)
+                        .width(Length::Fill)
+                        .align_x(Alignment::Center),
+                )
+                .class(cosmic::theme::Button::Text)
+                .on_press(Message::LoadMoreConversations)
+                .width(Length::Fill);
+
+                conv_column = conv_column.push(widget::divider::horizontal::default());
+                conv_column = conv_column.push(load_more_button);
+            }
+
             widget::scrollable(conv_column.padding([0, 8]))
                 .width(Length::Fill)
                 .into()
@@ -1886,8 +2154,10 @@ impl ConnectApplet {
     fn view_message_thread(&self) -> Element<'_, Message> {
         let default_unknown = fl!("unknown");
         let address = self
-            .current_thread_address
-            .as_deref()
+            .current_thread_addresses
+            .as_ref()
+            .and_then(|addrs| addrs.first())
+            .map(|s| s.as_str())
             .unwrap_or(&default_unknown);
         let display_name = self.contacts.get_name_or_number(address);
 
@@ -1919,10 +2189,49 @@ impl ConnectApplet {
             let bubble_max_width = (WIDE_POPUP_WIDTH * 0.75) as u16;
 
             let mut msg_column = column![].spacing(12).padding([8, 12]);
+
+            // Add "Load More" button at top if there are more messages
+            if self.messages_has_more {
+                let load_more_content: Element<Message> = if self.messages_loading_more {
+                    row![
+                        widget::icon::from_name("process-working-symbolic").size(16),
+                        text(fl!("loading-older")).size(14),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into()
+                } else {
+                    row![
+                        widget::icon::from_name("go-up-symbolic").size(16),
+                        text(fl!("load-older-messages")).size(14),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into()
+                };
+
+                let load_more_button = widget::button::custom(
+                    widget::container(load_more_content)
+                        .padding(8)
+                        .width(Length::Fill)
+                        .align_x(Alignment::Center),
+                )
+                .class(cosmic::theme::Button::Text)
+                .on_press_maybe(if self.messages_loading_more {
+                    None
+                } else {
+                    Some(Message::LoadMoreMessages)
+                })
+                .width(Length::Fill);
+
+                msg_column = msg_column.push(load_more_button);
+                msg_column = msg_column.push(widget::divider::horizontal::default());
+            }
+
             for msg in &self.messages {
-                // Note: message_type logic appears inverted from KDE Connect data
-                // MessageType::Sent actually means received, Inbox means sent
-                let is_received = msg.message_type == MessageType::Sent;
+                // Determine if message was received (from others) or sent (by user)
+                // MessageType::Inbox (1) = incoming/received, MessageType::Sent (2) = outgoing/sent
+                let is_received = msg.message_type == MessageType::Inbox;
                 let time_str = format_timestamp(msg.date);
 
                 let msg_text =
@@ -1940,7 +2249,7 @@ impl ConnectApplet {
                 // Received messages: show sender name and align left
                 // Sent messages: align right with clear visual separation
                 let msg_row: Element<Message> = if is_received {
-                    let sender_name = self.contacts.get_name_or_number(&msg.address);
+                    let sender_name = self.contacts.get_name_or_number(msg.primary_address());
                     column![
                         text(sender_name).size(11),
                         row![msg_container, widget::horizontal_space(),].width(Length::Fill),
@@ -1967,6 +2276,16 @@ impl ConnectApplet {
             .into()
         };
 
+        // Status message (e.g., error for group messaging)
+        let status_row: Element<Message> = if let Some(msg) = &self.status_message {
+            widget::container(text(msg).size(12))
+                .padding([4, 12])
+                .width(Length::Fill)
+                .into()
+        } else {
+            widget::vertical_space().height(0).into()
+        };
+
         // Compose bar
         let send_enabled = !self.sms_compose_text.is_empty() && !self.sms_sending;
         let compose_bar = row![
@@ -1990,6 +2309,7 @@ impl ConnectApplet {
             widget::divider::horizontal::default(),
             content,
             widget::divider::horizontal::default(),
+            status_row,
             compose_bar,
         ]
         .spacing(4)
@@ -3014,6 +3334,79 @@ fn should_show_file_notification(file_url: &str) -> bool {
     should_notify
 }
 
+/// Check if we should show an SMS notification (cross-process deduplication via file lock).
+/// Returns true if this is the first notification for this message within the dedup window.
+/// Uses thread_id and message timestamp as the unique key.
+fn should_show_sms_notification(thread_id: i64, message_date: i64) -> bool {
+    use std::fs::OpenOptions;
+    use std::io::{Read, Seek, Write};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let dedup_file = "/tmp/cosmic-connected-sms-dedup";
+    let dedup_window_ms: u128 = 2000; // 2 second window
+
+    // Create a unique key for this message
+    let message_key = format!("{}:{}", thread_id, message_date);
+
+    // Get current time as milliseconds since epoch
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    // Try to open or create the dedup file
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dedup_file)
+    {
+        Ok(f) => f,
+        Err(_) => return true, // Can't open file, allow notification
+    };
+
+    // Use file locking to ensure atomic read-modify-write
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+
+    // Acquire exclusive lock (blocking)
+    unsafe {
+        if libc::flock(fd, libc::LOCK_EX) != 0 {
+            return true; // Lock failed, allow notification
+        }
+    }
+
+    // Read current contents
+    let mut contents = String::new();
+    let _ = file.read_to_string(&mut contents);
+
+    let should_notify = if let Some((stored_key, stored_time_str)) = contents.split_once('\n') {
+        if let Ok(stored_time) = stored_time_str.parse::<u128>() {
+            // Check if same message and within window
+            stored_key != message_key || now_ms.saturating_sub(stored_time) >= dedup_window_ms
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+
+    if should_notify {
+        // Write new message key and timestamp
+        let _ = file.set_len(0); // Truncate
+        let _ = file.rewind();
+        let _ = write!(file, "{}\n{}", message_key, now_ms);
+    }
+
+    // Release lock
+    unsafe {
+        libc::flock(fd, libc::LOCK_UN);
+    }
+
+    should_notify
+}
+
 /// Create a stream that listens for D-Bus signals from KDE Connect.
 fn dbus_signal_subscription() -> impl futures_util::Stream<Item = Message> {
     futures_util::stream::unfold(DbusSubscriptionState::Init, |state| async move {
@@ -3092,10 +3485,18 @@ fn dbus_signal_subscription() -> impl futures_util::Stream<Item = Message> {
 
                 Some((
                     Message::DbusSignalReceived,
-                    DbusSubscriptionState::Listening { conn, stream, last_file: None },
+                    DbusSubscriptionState::Listening {
+                        conn,
+                        stream,
+                        last_file: None,
+                    },
                 ))
             }
-            DbusSubscriptionState::Listening { conn, mut stream, last_file } => {
+            DbusSubscriptionState::Listening {
+                conn,
+                mut stream,
+                last_file,
+            } => {
                 // Wait for relevant signals - be selective to avoid excessive refreshes
                 loop {
                     match stream.next().await {
@@ -3117,12 +3518,17 @@ fn dbus_signal_subscription() -> impl futures_util::Stream<Item = Message> {
                                             if let Some(rest) = path_str
                                                 .strip_prefix("/modules/kdeconnect/devices/")
                                             {
-                                                let device_id =
-                                                    rest.split('/').next().unwrap_or(rest).to_string();
+                                                let device_id = rest
+                                                    .split('/')
+                                                    .next()
+                                                    .unwrap_or(rest)
+                                                    .to_string();
 
                                                 // Parse the signal body
                                                 let body = msg.body();
-                                                if let Ok((file_url,)) = body.deserialize::<(String,)>() {
+                                                if let Ok((file_url,)) =
+                                                    body.deserialize::<(String,)>()
+                                                {
                                                     // Cross-process deduplication via file lock
                                                     // KDE Connect sends 3 duplicate signals per file transfer
                                                     // and COSMIC spawns multiple applet processes
@@ -3187,7 +3593,11 @@ fn dbus_signal_subscription() -> impl futures_util::Stream<Item = Message> {
                                         tracing::debug!("D-Bus signal: {}.{}", interface, member);
                                         return Some((
                                             Message::DbusSignalReceived,
-                                            DbusSubscriptionState::Listening { conn, stream, last_file },
+                                            DbusSubscriptionState::Listening {
+                                                conn,
+                                                stream,
+                                                last_file,
+                                            },
                                         ));
                                     }
                                 }
@@ -3315,14 +3725,24 @@ fn sms_notification_subscription() -> impl futures_util::Stream<Item = Message> 
                                                 {
                                                     if let Some(sms_msg) = parse_sms_message(&value)
                                                     {
-                                                        // Only notify for received messages (MessageType::Sent due to inversion)
-                                                        // See CLAUDE.md for explanation of message type inversion
+                                                        // Only notify for received messages
+                                                        // Standard Android SMS semantics: Inbox (1) = received from others
                                                         if sms_msg.message_type
-                                                            == kdeconnect_dbus::plugins::MessageType::Sent
+                                                            == kdeconnect_dbus::plugins::MessageType::Inbox
                                                         {
+                                                            // Cross-process deduplication:
+                                                            // COSMIC spawns multiple applet processes,
+                                                            // so use file-based locking to ensure only one shows the notification
+                                                            if !should_show_sms_notification(
+                                                                sms_msg.thread_id,
+                                                                sms_msg.date,
+                                                            ) {
+                                                                continue;
+                                                            }
+
                                                             tracing::debug!(
                                                                 "SMS received from {} on device {}: {}",
-                                                                sms_msg.address,
+                                                                sms_msg.primary_address(),
                                                                 device_id,
                                                                 &sms_msg.body[..sms_msg.body.len().min(30)]
                                                             );
@@ -3635,7 +4055,7 @@ async fn fetch_conversations_via_signals(
                             if should_update {
                                 conversations_map.insert(msg.thread_id, ConversationSummary {
                                     thread_id: msg.thread_id,
-                                    address: msg.address,
+                                    addresses: msg.addresses,
                                     last_message: msg.body,
                                     timestamp: msg.date,
                                     unread: !msg.read,
@@ -3664,7 +4084,7 @@ async fn fetch_conversations_via_signals(
                             if should_update {
                                 conversations_map.insert(msg.thread_id, ConversationSummary {
                                     thread_id: msg.thread_id,
-                                    address: msg.address,
+                                    addresses: msg.addresses,
                                     last_message: msg.body,
                                     timestamp: msg.date,
                                     unread: !msg.read,
@@ -3727,7 +4147,7 @@ async fn fetch_conversations_via_signals(
                         if should_update {
                             conversations_map.insert(msg.thread_id, ConversationSummary {
                                 thread_id: msg.thread_id,
-                                address: msg.address,
+                                addresses: msg.addresses,
                                 last_message: msg.body,
                                 timestamp: msg.date,
                                 unread: !msg.read,
@@ -3746,7 +4166,7 @@ async fn fetch_conversations_via_signals(
                         if should_update {
                             conversations_map.insert(msg.thread_id, ConversationSummary {
                                 thread_id: msg.thread_id,
-                                address: msg.address,
+                                addresses: msg.addresses,
                                 last_message: msg.body,
                                 timestamp: msg.date,
                                 unread: !msg.read,
@@ -4025,18 +4445,22 @@ async fn fetch_messages_fallback(
     Message::MessagesLoaded(thread_id, messages)
 }
 
-/// Send an SMS reply to a conversation thread.
-async fn send_sms_async(
+/// Fetch older messages for pagination (starting from a given offset).
+async fn fetch_older_messages_async(
     conn: Arc<Mutex<Connection>>,
     device_id: String,
     thread_id: i64,
-    message: String,
+    start_index: u32,
+    count: u32,
 ) -> Message {
-    use zbus::zvariant::Value;
+    use kdeconnect_dbus::plugins::parse_sms_message;
 
     let conn = conn.lock().await;
+
+    // The conversations interface is on the device path
     let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
 
+    // Build conversations proxy on the device path
     let conversations_proxy = match ConversationsProxy::builder(&conn)
         .path(device_path.as_str())
         .ok()
@@ -4045,22 +4469,203 @@ async fn send_sms_async(
         Some(fut) => match fut.await {
             Ok(p) => p,
             Err(e) => {
-                return Message::SmsSendResult(Err(format!("Failed to create proxy: {}", e)));
+                tracing::warn!("Failed to create conversations proxy: {}", e);
+                return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
             }
         },
         None => {
-            return Message::SmsSendResult(Err("Failed to build proxy path".to_string()));
+            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
         }
     };
 
-    // Send with empty attachments array
-    let empty_attachments: Vec<Value<'_>> = vec![];
-    match conversations_proxy
-        .reply_to_conversation(thread_id, &message, empty_attachments)
+    // Set up signal stream for conversationUpdated BEFORE requesting
+    let mut updated_stream = match conversations_proxy.receive_conversation_updated().await {
+        Ok(stream) => stream,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to subscribe to conversationUpdated for older messages: {}",
+                e
+            );
+            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
+        }
+    };
+
+    // Set up signal stream for conversationLoaded
+    let mut loaded_stream = match conversations_proxy.receive_conversation_loaded().await {
+        Ok(stream) => stream,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to subscribe to conversationLoaded for older messages: {}",
+                e
+            );
+            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
+        }
+    };
+
+    // Request the specific conversation with pagination offset
+    tracing::debug!(
+        "Requesting older messages for thread {} (messages {}-{})",
+        thread_id,
+        start_index,
+        start_index + count
+    );
+    if let Err(e) = conversations_proxy
+        .request_conversation(thread_id, start_index as i32, count as i32)
         .await
     {
-        Ok(()) => Message::SmsSendResult(Ok("Message sent".to_string())),
-        Err(e) => Message::SmsSendResult(Err(format!("Send failed: {}", e))),
+        tracing::warn!("Failed to request older messages: {}", e);
+        return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
+    }
+
+    // Collect messages from signals until conversationLoaded or timeout
+    let mut messages_map: HashMap<i64, SmsMessage> = HashMap::new();
+    let timeout = tokio::time::Duration::from_secs(10);
+    let start_time = tokio::time::Instant::now();
+
+    loop {
+        tokio::select! {
+            // Check for conversationUpdated signals
+            Some(signal) = updated_stream.next() => {
+                match signal.args() {
+                    Ok(args) => {
+                        if let Some(msg) = parse_sms_message(&args.msg) {
+                            if msg.thread_id == thread_id {
+                                // Use date as key to deduplicate
+                                messages_map.insert(msg.date, msg);
+                                tracing::debug!(
+                                    "Received older message for thread {}, total: {}",
+                                    thread_id,
+                                    messages_map.len()
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse conversationUpdated signal: {}", e);
+                    }
+                }
+            }
+            // Check for conversationLoaded signal
+            Some(signal) = loaded_stream.next() => {
+                match signal.args() {
+                    Ok(args) => {
+                        if args.conversation_id == thread_id {
+                            tracing::info!(
+                                "Older messages loaded for thread {}, got {}",
+                                thread_id,
+                                messages_map.len()
+                            );
+                            // Drain any remaining buffered conversationUpdated signals
+                            'drain: loop {
+                                tokio::select! {
+                                    biased;
+                                    Some(signal) = updated_stream.next() => {
+                                        if let Ok(args) = signal.args() {
+                                            if let Some(msg) = parse_sms_message(&args.msg) {
+                                                if msg.thread_id == thread_id {
+                                                    messages_map.insert(msg.date, msg);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(5)) => {
+                                        break 'drain;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse conversationLoaded signal: {}", e);
+                    }
+                }
+            }
+            // Timeout
+            _ = tokio::time::sleep_until(start_time + timeout) => {
+                tracing::warn!(
+                    "Timeout waiting for older messages, got {} messages",
+                    messages_map.len()
+                );
+                break;
+            }
+        }
+    }
+
+    // Convert map to sorted vector (oldest first)
+    let mut messages: Vec<SmsMessage> = messages_map.into_values().collect();
+    messages.sort_by(|a, b| a.date.cmp(&b.date));
+
+    // Determine if there are more messages available
+    // If we got fewer messages than requested, we've reached the beginning
+    let has_more = messages.len() >= count as usize;
+
+    tracing::info!(
+        "Loaded {} older messages for thread {}, has_more: {}",
+        messages.len(),
+        thread_id,
+        has_more
+    );
+    Message::OlderMessagesLoaded(thread_id, messages, has_more)
+}
+
+/// Send an SMS message using the SMS plugin's sendSms method directly.
+///
+/// This bypasses the daemon's conversation cache (which replyToConversation depends on)
+/// and sends directly to the phone. The sub_id (SIM subscription ID) is required for
+/// MMS group messages to work correctly.
+///
+/// Sends to ALL addresses in the recipients list, supporting group conversations.
+async fn send_sms_async(
+    conn: Arc<Mutex<Connection>>,
+    device_id: String,
+    _thread_id: i64,
+    recipients: Vec<String>,
+    message: String,
+    sub_id: i64,
+) -> Message {
+    use zbus::zvariant::{Structure, Value};
+
+    let conn = conn.lock().await;
+    // SMS plugin is on /sms subpath
+    let sms_path = format!("{}/devices/{}/sms", kdeconnect_dbus::BASE_PATH, device_id);
+
+    // Format addresses as D-Bus structs: array of variants containing structs with single string
+    // This matches what KDE Connect's ConversationAddress serializes to
+    // NOTE: Do NOT deduplicate - MMS groups need exact address list to match the thread
+    let addresses: Vec<Value<'_>> = recipients
+        .iter()
+        .map(|addr| Value::Structure(Structure::from((addr.clone(),))))
+        .collect();
+    let empty_attachments: Vec<Value<'_>> = vec![];
+
+    tracing::info!(
+        "Sending SMS via sendSms to {} recipient(s), sub_id={}",
+        addresses.len(),
+        sub_id
+    );
+
+    // Use the SMS plugin's sendSms method directly with sub_id
+    // This is what replyToConversation does internally after looking up addresses from cache
+    let result = conn
+        .call_method(
+            Some("org.kde.kdeconnect.daemon"),
+            sms_path.as_str(),
+            Some("org.kde.kdeconnect.device.sms"),
+            "sendSms",
+            &(addresses, message.as_str(), empty_attachments, sub_id),
+        )
+        .await;
+
+    match result {
+        Ok(_) => {
+            tracing::info!("SMS sent successfully via sendSms");
+            Message::SmsSendResult(Ok(message))
+        }
+        Err(e) => {
+            tracing::error!("SMS send failed: {}", e);
+            Message::SmsSendResult(Err(format!("Send failed: {}", e)))
+        }
     }
 }
 
@@ -4071,7 +4676,7 @@ async fn send_new_sms_async(
     recipient: String,
     message: String,
 ) -> Message {
-    use zbus::zvariant::{Structure, Value};
+    use zbus::zvariant::Value;
 
     let conn = conn.lock().await;
     let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
@@ -4095,9 +4700,10 @@ async fn send_new_sms_async(
         }
     };
 
-    // Format addresses as D-Bus struct containing the phone number
-    let address_struct = Structure::from((recipient.as_str(),));
-    let addresses: Vec<Value<'_>> = vec![Value::Structure(address_struct)];
+    // Format address as D-Bus struct for KDE Connect
+    // KDE Connect's ConversationAddress is a struct containing a single string: (s)
+    use zbus::zvariant::Structure;
+    let addresses: Vec<Value<'_>> = vec![Value::Structure(Structure::from((recipient.clone(),)))];
     let empty_attachments: Vec<Value<'_>> = vec![];
 
     match conversations_proxy

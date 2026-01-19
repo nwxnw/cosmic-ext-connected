@@ -30,6 +30,24 @@ pub trait Sms {
         start_timestamp: i64,
         count: i64,
     ) -> zbus::Result<()>;
+
+    /// Send an SMS message directly via the SMS plugin.
+    /// This is more reliable than replyToConversation as it doesn't depend
+    /// on the daemon's conversation cache.
+    ///
+    /// # Arguments
+    /// * `addresses` - List of recipient addresses (phone numbers as D-Bus structs)
+    /// * `text_message` - The text message to send
+    /// * `attachment_urls` - URLs of attachments (empty for text-only messages)
+    /// * `sub_id` - SIM subscription ID (-1 for default)
+    #[zbus(name = "sendSms")]
+    fn send_sms(
+        &self,
+        addresses: Vec<Value<'_>>,
+        text_message: &str,
+        attachment_urls: Vec<Value<'_>>,
+        sub_id: i64,
+    ) -> zbus::Result<()>;
 }
 
 /// Proxy for the conversations D-Bus interface.
@@ -130,8 +148,9 @@ impl From<i32> for MessageType {
 pub struct SmsMessage {
     /// The message text content.
     pub body: String,
-    /// Phone number/address of the other party.
-    pub address: String,
+    /// Phone numbers/addresses of all participants (for group messages).
+    /// For 1-on-1 conversations this will have one element.
+    pub addresses: Vec<String>,
     /// Unix timestamp in milliseconds.
     pub date: i64,
     /// Whether this is a sent or received message.
@@ -140,6 +159,16 @@ pub struct SmsMessage {
     pub read: bool,
     /// The conversation thread ID this message belongs to.
     pub thread_id: i64,
+    /// SIM subscription ID (-1 for default).
+    /// Required for MMS group messages to use the correct SIM.
+    pub sub_id: i64,
+}
+
+impl SmsMessage {
+    /// Get the primary address (first participant) for display purposes.
+    pub fn primary_address(&self) -> &str {
+        self.addresses.first().map(|s| s.as_str()).unwrap_or("Unknown")
+    }
 }
 
 /// Summary of a conversation for the conversation list.
@@ -147,14 +176,21 @@ pub struct SmsMessage {
 pub struct ConversationSummary {
     /// The conversation thread ID.
     pub thread_id: i64,
-    /// Phone number/address of the contact.
-    pub address: String,
+    /// Phone numbers/addresses of all participants (for group messages).
+    pub addresses: Vec<String>,
     /// Preview of the last message in the conversation.
     pub last_message: String,
     /// Timestamp of the last message in milliseconds.
     pub timestamp: i64,
     /// Whether there are unread messages.
     pub unread: bool,
+}
+
+impl ConversationSummary {
+    /// Get the primary address (first participant) for display purposes.
+    pub fn primary_address(&self) -> &str {
+        self.addresses.first().map(|s| s.as_str()).unwrap_or("Unknown")
+    }
 }
 
 /// Helper to extract a string from a Value.
@@ -206,10 +242,9 @@ pub fn parse_sms_message(value: &OwnedValue) -> Option<SmsMessage> {
         }
     };
 
-    // Parse fields by position
-    // Field 0: type (i32) - 1=Inbox (received), 2=Sent
-    let msg_type_value = fields.first().and_then(get_i32_from_value).unwrap_or(1);
-    tracing::trace!("Message type value: {} (Sent=2, Inbox=1)", msg_type_value);
+    // Parse fields by position (from KDE Connect conversationmessage.h)
+    // Field 0: eventField (i32) - event flags (e.g., 1 = EventTextMessage)
+    // We don't currently use eventField, but it's documented here for reference
 
     // Field 1: body (string)
     let body = fields
@@ -218,50 +253,68 @@ pub fn parse_sms_message(value: &OwnedValue) -> Option<SmsMessage> {
         .unwrap_or_default();
 
     // Field 2: addresses (array of structs containing string)
-    let address = fields
+    // Extract ALL addresses for group message support
+    let addresses: Vec<String> = fields
         .get(2)
         .and_then(|v| {
             if let Value::Array(arr) = v {
-                arr.iter().next().and_then(|addr_struct| {
-                    // Each address is a struct with a single string field
-                    if let Value::Structure(s) = addr_struct {
-                        s.fields().first().and_then(get_string_from_value)
-                    } else {
-                        get_string_from_value(addr_struct)
-                    }
-                })
+                let addrs: Vec<String> = arr
+                    .iter()
+                    .filter_map(|addr_struct| {
+                        // Each address is a struct with a single string field
+                        if let Value::Structure(s) = addr_struct {
+                            s.fields().first().and_then(get_string_from_value)
+                        } else {
+                            get_string_from_value(addr_struct)
+                        }
+                    })
+                    .collect();
+                if addrs.is_empty() {
+                    None
+                } else {
+                    Some(addrs)
+                }
             } else {
                 None
             }
         })
-        .unwrap_or_else(|| "Unknown".to_string());
+        .unwrap_or_else(|| vec!["Unknown".to_string()]);
 
     // Field 3: date (i64)
     let date = fields.get(3).and_then(get_i64_from_value).unwrap_or(0);
 
-    // Field 4: read (i32, 0=unread, 1=read)
+    // Field 4: type (i32) - 1=Inbox (incoming), 2=Sent (outgoing)
+    let msg_type_value = fields.get(4).and_then(get_i32_from_value).unwrap_or(1);
+    let msg_type_parsed = MessageType::from(msg_type_value);
+
+    // Field 5: read (i32, 0=unread, 1=read)
     let read = fields
-        .get(4)
+        .get(5)
         .and_then(get_i32_from_value)
         .map(|v| v != 0)
         .unwrap_or(true);
 
-    // Field 5: unknown
     // Field 6: thread_id (i64)
     let thread_id = fields.get(6).and_then(get_i64_from_value).unwrap_or(0);
 
+    // Field 7: uID (i32) - unique message ID
+    // Field 8: subID (i64) - SIM subscription ID (which SIM card to use)
+    let sub_id = fields.get(8).and_then(get_i64_from_value).unwrap_or(-1);
+    // Field 9: attachments (array)
+
     Some(SmsMessage {
         body,
-        address,
+        addresses,
         date,
-        message_type: MessageType::from(msg_type_value),
+        message_type: msg_type_parsed,
         read,
         thread_id,
+        sub_id,
     })
 }
 
 /// Maximum number of conversations to display in the list.
-pub const MAX_CONVERSATIONS: usize = 25;
+pub const MAX_CONVERSATIONS: usize = 20;
 
 /// Parse a list of D-Bus variant values into conversation summaries.
 ///
@@ -285,7 +338,7 @@ pub fn parse_conversations(values: Vec<OwnedValue>) -> Vec<ConversationSummary> 
 
         summaries.push(ConversationSummary {
             thread_id: msg.thread_id,
-            address: msg.address,
+            addresses: msg.addresses,
             last_message: msg.body,
             timestamp: msg.date,
             unread: !msg.read,

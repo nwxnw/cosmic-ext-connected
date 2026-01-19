@@ -3,10 +3,11 @@
 use crate::app::{DeviceInfo, Message};
 use crate::config::Config;
 use crate::fl;
+use cosmic::iced::advanced::widget::text::Style as TextStyle;
 use cosmic::iced::widget::{column, row, text};
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{self, icon};
-use cosmic::Element;
+use cosmic::{theme, Element};
 
 /// Render the device list view.
 pub fn view<'a>(
@@ -83,40 +84,54 @@ fn device_row<'a>(device: &'a DeviceInfo, config: &'a Config) -> Element<'a, Mes
         _ => "device-symbolic",
     };
 
-    let status_text = match (
+    let (status_text, is_offline) = match (
         device.is_reachable,
         device.is_paired,
         device.is_pair_requested,
         device.is_pair_requested_by_peer,
     ) {
-        (_, _, _, true) => fl!("pairing-request"),
-        (_, _, true, _) => fl!("pairing"),
-        (true, true, _, _) => fl!("connected"),
-        (false, true, _, _) => fl!("offline"),
-        (true, false, _, _) => fl!("not-paired"),
-        _ => fl!("offline"),
+        (_, _, _, true) => (fl!("pairing-request"), false),
+        (_, _, true, _) => (fl!("pairing"), false),
+        (true, true, _, _) => (fl!("connected"), false),
+        (false, true, _, _) => (fl!("offline"), true),
+        (true, false, _, _) => (fl!("not-paired"), false),
+        _ => (fl!("offline"), true),
+    };
+
+    // Apply warning color (yellow) to offline status text for better visual indication
+    let status_widget = if is_offline {
+        fn warning_style(theme: &cosmic::Theme) -> TextStyle {
+            let warning_color = theme.cosmic().warning.base;
+            TextStyle {
+                color: Some(warning_color.into()),
+            }
+        }
+        widget::text(status_text)
+            .size(11)
+            .class(theme::Text::Custom(warning_style))
+    } else {
+        widget::text(status_text).size(11)
     };
 
     let mut row_content = row![
         icon::from_name(icon_name).size(24),
-        column![
-            text(device.name.clone()).size(14),
-            text(status_text).size(11),
-        ]
-        .spacing(2),
+        column![text(device.name.clone()).size(14), status_widget,].spacing(2),
     ]
     .spacing(12)
     .align_y(Alignment::Center);
 
     // Add battery info if available and enabled in settings
+    // KDE Connect returns -1 when battery level is unknown, so filter those out
     if config.show_battery_percentage {
         if let (Some(level), Some(charging)) = (device.battery_level, device.battery_charging) {
-            let battery_text = if charging {
-                format!("{}%+", level)
-            } else {
-                format!("{}%", level)
-            };
-            row_content = row_content.push(text(battery_text).size(12));
+            if level >= 0 {
+                let battery_text = if charging {
+                    format!("{}%+", level)
+                } else {
+                    format!("{}%", level)
+                };
+                row_content = row_content.push(text(battery_text).size(12));
+            }
         }
     }
 

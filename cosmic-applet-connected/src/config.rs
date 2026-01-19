@@ -8,7 +8,7 @@ pub const APP_ID: &str = "com.github.cosmic-connected-applet";
 
 /// Applet configuration stored in COSMIC's config system.
 #[derive(Debug, Clone, Serialize, Deserialize, CosmicConfigEntry, PartialEq, Eq)]
-#[version = 4]
+#[version = 6]
 pub struct Config {
     /// Show battery percentage in device list
     pub show_battery_percentage: bool,
@@ -40,7 +40,7 @@ impl Default for Config {
             show_battery_percentage: true,
             show_offline_devices: false,
             forward_notifications: true,
-            messages_per_page: 20,
+            messages_per_page: 10,
             sms_notifications: true,
             sms_notification_show_content: true,
             sms_notification_show_sender: true,
