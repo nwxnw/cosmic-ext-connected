@@ -1,4 +1,4 @@
-# Justfile for cosmic-connect-applet
+# Justfile for cosmic-connected-applet
 # Install just: cargo install just
 
 # Installation paths
@@ -7,8 +7,8 @@ bindir := prefix / 'bin'
 sharedir := prefix / 'share'
 
 # Applet metadata
-applet_name := 'cosmic-applet-connect'
-desktop_file := 'com.github.cosmic-connect-applet.desktop'
+applet_name := 'cosmic-applet-connected'
+desktop_file := 'com.github.cosmic-connected-applet.desktop'
 
 # Default recipe - show available commands
 default:
@@ -24,15 +24,15 @@ build-release:
 
 # Run the applet (for testing)
 run:
-    cargo run -p cosmic-applet-connect
+    cargo run -p cosmic-applet-connected
 
 # Run in standalone window mode (for development)
 run-standalone:
-    cargo run -p cosmic-applet-connect -- --standalone
+    cargo run -p cosmic-applet-connected -- --standalone
 
 # Run standalone with debug logging
 run-debug:
-    RUST_LOG=cosmic_applet_connect=debug cargo run -p cosmic-applet-connect -- --standalone
+    RUST_LOG=cosmic_applet_connected=debug cargo run -p cosmic-applet-connected -- --standalone
 
 # Install the applet to the system (builds first, requires sudo)
 # Note: May fail under sudo if cargo not in PATH. Use install-only instead.
@@ -48,7 +48,7 @@ install-only:
     @echo ""
     @echo "To add the applet to your panel:"
     @echo "  1. Open Settings > Desktop > Panel"
-    @echo "  2. Click 'Add Widget' and find 'Connect'"
+    @echo "  2. Click 'Add Widget' and find 'Connected'"
     @echo ""
     @echo "To reload after changes: killall cosmic-panel"
 

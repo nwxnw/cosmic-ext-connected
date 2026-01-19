@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with the cosmic-connect-applet project.
+This file provides guidance to Claude Code when working with the cosmic-connected-applet project.
 
 ## Project Overview
 
-COSMIC Connect is a desktop applet for the COSMIC desktop environment (System76's Rust-based DE) that provides phone-to-desktop connectivity. It leverages KDE Connect's daemon as a backend service while providing a native COSMIC/libcosmic user interface.
+COSMIC Connected is a desktop applet for the COSMIC desktop environment (System76's Rust-based DE) that provides phone-to-desktop connectivity. It leverages KDE Connect's daemon as a backend service while providing a native COSMIC/libcosmic user interface.
 
 **Key Principle:** This project does NOT modify KDE Connect. It consumes the KDE Connect daemon (`kdeconnectd`) as a D-Bus service and builds a completely new UI using libcosmic.
 
@@ -12,8 +12,8 @@ COSMIC Connect is a desktop applet for the COSMIC desktop environment (System76'
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  COSMIC Connect Applet (Rust)                                   │
-│  ├── cosmic-applet-connect/  (UI layer - libcosmic)            │
+│  COSMIC Connected Applet (Rust)                                   │
+│  ├── cosmic-applet-connected/  (UI layer - libcosmic)            │
 │  └── kdeconnect-dbus/        (D-Bus client - zbus)             │
 └──────────────────────┬──────────────────────────────────────────┘
                        │ D-Bus (org.kde.kdeconnect.*)
@@ -43,7 +43,7 @@ COSMIC Connect is a desktop applet for the COSMIC desktop environment (System76'
 ## Project Structure
 
 ```
-cosmic-connect-applet/
+cosmic-connected-applet/
 ├── CLAUDE.md                     # This file
 ├── Cargo.toml                    # Workspace root
 ├── Cargo.lock
@@ -51,14 +51,14 @@ cosmic-connect-applet/
 ├── justfile                      # Build automation (includes install/uninstall)
 │
 ├── data/                         # Desktop entry for applet registration
-│   └── com.github.cosmic-connect-applet.desktop
+│   └── com.github.cosmic-connected-applet.desktop
 │
-├── cosmic-applet-connect/        # Main applet crate
+├── cosmic-applet-connected/        # Main applet crate
 │   ├── Cargo.toml
 │   ├── i18n.toml                # Fluent localization config
 │   ├── i18n/                    # Translation files
 │   │   └── en/                  # English translations
-│   │       └── cosmic-applet-connect.ftl
+│   │       └── cosmic-applet-connected.ftl
 │   └── src/
 │       ├── main.rs              # Entry point
 │       ├── app.rs               # Panel applet state & logic
@@ -115,7 +115,7 @@ cargo build
 cargo build --release
 
 # Run as panel applet (requires COSMIC desktop)
-cargo run -p cosmic-applet-connect
+cargo run -p cosmic-applet-connected
 
 # Run tests
 cargo test
@@ -141,9 +141,9 @@ COSMIC discovers panel applets through `.desktop` files with special keys:
 
 ```ini
 [Desktop Entry]
-Name=Connect
+Name=Connected
 Type=Application
-Exec=cosmic-applet-connect
+Exec=cosmic-applet-connected
 Icon=phone-symbolic
 NoDisplay=true
 X-CosmicApplet=true
@@ -166,7 +166,7 @@ sudo just install
 
 # 3. Add applet to panel
 #    Open: Settings > Desktop > Panel > Add Widget
-#    Find "Connect" in the list and add it
+#    Find "Connected" in the list and add it
 
 # 4. After code changes, rebuild and reinstall
 cargo build --release && sudo just install
@@ -186,7 +186,7 @@ cargo build --release && sudo just install
 **Debug Logging:**
 ```bash
 # View panel applet logs (applet runs as part of cosmic-panel)
-journalctl --user -f | grep cosmic-applet-connect
+journalctl --user -f | grep cosmic-applet-connected
 ```
 
 ### Uninstallation
@@ -261,11 +261,11 @@ The applet uses the Fluent localization system following COSMIC app patterns. **
 ### File Structure
 
 ```
-cosmic-applet-connect/
+cosmic-applet-connected/
 ├── i18n.toml                           # Fluent configuration
 ├── i18n/
 │   └── en/
-│       └── cosmic-applet-connect.ftl   # English translations
+│       └── cosmic-applet-connected.ftl   # English translations
 └── src/
     └── i18n.rs                         # fl!() macro and initialization
 ```
@@ -304,9 +304,9 @@ messages-title = Messages - { $device }
 
 ### Adding New Translations
 
-1. Add the message key and English text to `i18n/en/cosmic-applet-connect.ftl`
+1. Add the message key and English text to `i18n/en/cosmic-applet-connected.ftl`
 2. Use `fl!("message-key")` in code
-3. For new languages, create `i18n/<lang>/cosmic-applet-connect.ftl` (e.g., `i18n/de/`, `i18n/es/`)
+3. For new languages, create `i18n/<lang>/cosmic-applet-connected.ftl` (e.g., `i18n/de/`, `i18n/es/`)
 
 ### Important: Lifetime Handling with fl!()
 
@@ -347,7 +347,7 @@ The applet uses COSMIC's configuration system (`cosmic_config`) for persistent s
 
 ### Config Location
 
-Settings are stored in `~/.config/cosmic/com.github.cosmic-connect-applet/v3/`
+Settings are stored in `~/.config/cosmic/com.github.cosmic-connected-applet/v4/`
 
 ### Config Struct
 
@@ -734,7 +734,7 @@ notify_rust::Notification::new()
     .summary(&summary)  // "New SMS" or "New SMS from {name}"
     .body(&body)        // Message content or "Message received"
     .icon("phone-symbolic")
-    .appname("COSMIC Connect")
+    .appname("COSMIC Connected")
     .show()
 ```
 
@@ -775,7 +775,7 @@ notify_rust::Notification::new()
     .summary(&summary)  // "Incoming Call" or "Incoming call from {name}"
     .body(&device_name) // Which device received the call
     .icon("call-start-symbolic")  // or "call-missed-symbolic" for missed
-    .appname("COSMIC Connect")
+    .appname("COSMIC Connected")
     .urgency(notify_rust::Urgency::Critical)  // Incoming calls are high priority
     .show()
 ```
@@ -797,7 +797,7 @@ The share plugin emits a `shareReceived` signal with a single string argument:
 
 1. **D-Bus Signal Subscription**: The main D-Bus subscription listens for `shareReceived` signals from `org.kde.kdeconnect.device.share`.
 
-2. **Cross-Process Deduplication**: COSMIC spawns multiple applet processes, and KDE Connect sends 3 duplicate signals per file transfer. A file-based lock mechanism (`/tmp/cosmic-connect-file-dedup`) ensures only one notification is shown:
+2. **Cross-Process Deduplication**: COSMIC spawns multiple applet processes, and KDE Connect sends 3 duplicate signals per file transfer. A file-based lock mechanism (`/tmp/cosmic-connected-file-dedup`) ensures only one notification is shown:
    - Uses `libc::flock()` for atomic file locking across processes
    - Stores last file URL and timestamp
    - Deduplication window of 2 seconds
@@ -812,7 +812,7 @@ notify_rust::Notification::new()
     .summary(&fl!("file-received-from", device = device_name))
     .body(&file_name)
     .icon("folder-download-symbolic")
-    .appname("COSMIC Connect")
+    .appname("COSMIC Connected")
     .timeout(notify_rust::Timeout::Milliseconds(5000))
     .show()
 ```
@@ -827,7 +827,7 @@ COSMIC panel spawns applets as separate processes (each with its own PID and mem
 The solution uses a temp file with POSIX file locking:
 ```rust
 fn should_show_file_notification(file_url: &str) -> bool {
-    // Open /tmp/cosmic-connect-file-dedup
+    // Open /tmp/cosmic-connected-file-dedup
     // Acquire exclusive lock with flock(fd, LOCK_EX)
     // Check if same file URL within 2 second window
     // Update file with new URL and timestamp

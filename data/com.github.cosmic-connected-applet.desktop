@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=Connect
+Name=Connected
 Comment=Phone connectivity via KDE Connect
 Type=Application
-Exec=cosmic-applet-connect
+Exec=cosmic-applet-connected
 Icon=phone-symbolic
 Terminal=false
 Categories=COSMIC;

@@ -1,7 +1,7 @@
-# COSMIC Connect Applet - English translations
+# COSMIC Connected Applet - English translations
 
 # Application
-app-title = COSMIC Connect
+app-title = COSMIC Connected
 
 # General UI
 back = Back

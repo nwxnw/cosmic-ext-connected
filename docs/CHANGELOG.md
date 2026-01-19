@@ -1,34 +1,32 @@
-# Development Changelog
+# Changelog
 
-Historical record of development phases for COSMIC Connect applet.
+All notable changes to COSMIC Connected will be documented in this file.
 
-## Phase 1: Foundation
+## [Unreleased]
 
-- [x] Project architecture planning
-- [x] Workspace and crate setup
-- [x] Minimal COSMIC applet (hello world)
-- [x] D-Bus connection to kdeconnectd
-- [x] Standalone window mode for development testing
+### Changed
+- Renamed applet from "COSMIC Connect" to "COSMIC Connected"
+- Renamed package from `cosmic-applet-connect` to `cosmic-applet-connected`
+- Renamed APP_ID from `com.github.cosmic-connect-applet` to `com.github.cosmic-connected-applet`
+- SMS compose now sends message on Enter key press
 
-## Phase 2: Core Connectivity
+### Added
+- File receive notifications with cross-process deduplication
+- Call notifications for incoming and missed calls (with privacy controls)
+- SMS desktop notifications (with privacy controls)
+- Find My Phone feature to ring connected devices
+- Media controls (play/pause, next/previous, volume, player selection)
+- SMS messaging with conversation list, message threads, and compose
+- Contact name resolution from synced vCards
+- Settings panel with notification privacy options
+- Battery status display
+- Clipboard sync (send to device)
+- File and URL sharing
+- Ping functionality
+- Device pairing/unpairing
 
-- [x] Daemon proxy implementation
-- [x] Device listing and status
-- [x] Pair/unpair functionality
-- [x] D-Bus signal subscription for real-time updates
+## [0.1.0] - Initial Release
 
-## Phase 3: Essential Features
-
-- [x] Battery status display
-- [x] Ping functionality
-- [x] Notification forwarding (view and dismiss)
-- [x] Basic settings (battery display, offline devices, notifications toggle)
-
-## Phase 4: Advanced Features
-
-- [x] File sharing (share files and URLs to device)
-- [x] SMS viewing (conversation list, message threads, contact name lookup)
-- [x] SMS sending (reply to conversations, new message with contact lookup)
-- [x] Clipboard sync (send clipboard/text to device)
-- [x] Media controls (play/pause, next/previous, volume, player selection)
-- [x] Persistent settings (save to config file via cosmic_config)
+- Native COSMIC desktop applet for phone connectivity
+- Integration with KDE Connect daemon via D-Bus
+- Device discovery and management

@@ -1,10 +1,10 @@
 [package]
-name = "cosmic-applet-connect"
+name = "cosmic-applet-connected"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "COSMIC desktop applet for phone connectivity via KDE Connect"
+description = "COSMIC Connected - phone connectivity applet for COSMIC desktop"
 
 [dependencies]
 libcosmic.workspace = true

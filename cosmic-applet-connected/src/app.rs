@@ -1,4 +1,4 @@
-//! Main application state and logic for the COSMIC Connect applet.
+//! Main application state and logic for the COSMIC Connected applet.
 
 use crate::config::Config;
 use crate::fl;
@@ -380,7 +380,7 @@ impl Application for ConnectApplet {
     type Flags = ();
     type Message = Message;
 
-    const APP_ID: &'static str = "com.github.cosmic-connect-applet";
+    const APP_ID: &'static str = "com.github.cosmic-connected-applet";
 
     fn core(&self) -> &Core {
         &self.core
@@ -1346,7 +1346,7 @@ impl Application for ConnectApplet {
                             .summary(&summary)
                             .body(&body)
                             .icon("phone-symbolic")
-                            .appname("COSMIC Connect")
+                            .appname("COSMIC Connected")
                             .show()
                         {
                             tracing::warn!("Failed to show SMS notification: {}", e);
@@ -1411,7 +1411,7 @@ impl Application for ConnectApplet {
                             .summary(&summary)
                             .body(&device_name)
                             .icon(icon)
-                            .appname("COSMIC Connect")
+                            .appname("COSMIC Connected")
                             .urgency(urgency)
                             .show()
                         {
@@ -1455,7 +1455,7 @@ impl Application for ConnectApplet {
                                     .summary(&summary)
                                     .body(&file_name_clone)
                                     .icon("folder-download-symbolic")
-                                    .appname("COSMIC Connect")
+                                    .appname("COSMIC Connected")
                                     .timeout(notify_rust::Timeout::Milliseconds(5000)) // 5 second timeout
                                     .show()
                             }).await;
@@ -1972,6 +1972,7 @@ impl ConnectApplet {
         let compose_bar = row![
             widget::text_input(fl!("type-message"), &self.sms_compose_text)
                 .on_input(Message::SmsComposeInput)
+                .on_submit(|_| Message::SendSms)
                 .width(Length::Fill),
             widget::button::icon(widget::icon::from_name("mail-send-symbolic")).on_press_maybe(
                 if send_enabled {
@@ -2951,7 +2952,7 @@ fn should_show_file_notification(file_url: &str) -> bool {
     use std::io::{Read, Seek, Write};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let dedup_file = "/tmp/cosmic-connect-file-dedup";
+    let dedup_file = "/tmp/cosmic-connected-file-dedup";
     let dedup_window_ms: u128 = 2000; // 2 second window
 
     // Get current time as milliseconds since epoch
