@@ -1,6 +1,7 @@
 //! D-Bus signal subscriptions for real-time updates from KDE Connect.
 
 use crate::app::Message;
+use crate::constants::dbus::RETRY_DELAY_SECS;
 use crate::notifications::{should_show_file_notification, should_show_sms_notification};
 use futures_util::StreamExt;
 use kdeconnect_dbus::plugins::{parse_sms_message, MessageType};
@@ -31,7 +32,7 @@ pub fn dbus_signal_subscription() -> impl futures_util::Stream<Item = Message> {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!("Failed to connect to D-Bus for signals: {}", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
                         return Some((
                             Message::Error("D-Bus connection failed".to_string()),
                             DbusSubscriptionState::Init,
@@ -255,7 +256,7 @@ pub fn sms_notification_subscription() -> impl futures_util::Stream<Item = Messa
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!("Failed to connect to D-Bus for SMS signals: {}", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
                         return Some((
                             Message::Error("D-Bus connection failed for SMS".to_string()),
                             SmsSubscriptionState::Init,
@@ -340,7 +341,8 @@ pub fn sms_notification_subscription() -> impl futures_util::Stream<Item = Messa
                                                     {
                                                         // Only notify for received messages
                                                         // Standard Android SMS semantics: Inbox (1) = received from others
-                                                        if sms_msg.message_type == MessageType::Inbox
+                                                        if sms_msg.message_type
+                                                            == MessageType::Inbox
                                                         {
                                                             // Cross-process deduplication:
                                                             // COSMIC spawns multiple applet processes,
@@ -411,7 +413,7 @@ pub fn call_notification_subscription() -> impl futures_util::Stream<Item = Mess
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!("Failed to connect to D-Bus for call signals: {}", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
                         return Some((
                             Message::Error("D-Bus connection failed for calls".to_string()),
                             CallSubscriptionState::Init,

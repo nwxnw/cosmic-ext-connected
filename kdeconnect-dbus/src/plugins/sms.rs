@@ -170,7 +170,10 @@ pub struct SmsMessage {
 impl SmsMessage {
     /// Get the primary address (first participant) for display purposes.
     pub fn primary_address(&self) -> &str {
-        self.addresses.first().map(|s| s.as_str()).unwrap_or("Unknown")
+        self.addresses
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("Unknown")
     }
 }
 
@@ -192,7 +195,10 @@ pub struct ConversationSummary {
 impl ConversationSummary {
     /// Get the primary address (first participant) for display purposes.
     pub fn primary_address(&self) -> &str {
-        self.addresses.first().map(|s| s.as_str()).unwrap_or("Unknown")
+        self.addresses
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("Unknown")
     }
 }
 

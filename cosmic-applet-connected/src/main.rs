@@ -5,6 +5,7 @@
 
 mod app;
 mod config;
+mod constants;
 mod device;
 mod i18n;
 mod media;

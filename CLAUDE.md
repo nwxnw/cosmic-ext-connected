@@ -61,14 +61,33 @@ cosmic-connected-applet/
 │   │       └── cosmic-applet-connected.ftl
 │   └── src/
 │       ├── main.rs              # Entry point
-│       ├── app.rs               # Panel applet state & logic
+│       ├── app.rs               # Core: State struct, Message enum, update dispatcher
 │       ├── config.rs            # User preferences
 │       ├── i18n.rs              # Localization module with fl!() macro
-│       └── ui/
-│           ├── mod.rs
-│           ├── device_list.rs   # Device listing view
-│           ├── device_page.rs   # Individual device view
-│           └── widgets/         # Reusable UI components
+│       ├── subscriptions.rs     # D-Bus signal subscriptions (device, sms, call)
+│       ├── notifications.rs     # Notification deduplication helpers
+│       │
+│       ├── device/              # Device-related async operations
+│       │   ├── mod.rs           # Public exports
+│       │   ├── fetch.rs         # fetch_devices_async, fetch_device_info
+│       │   └── actions.rs       # ping, find_phone, share, pairing, clipboard
+│       │
+│       ├── sms/                 # SMS messaging feature
+│       │   ├── mod.rs           # Public exports
+│       │   ├── fetch.rs         # fetch_conversations_async, fetch_messages_async
+│       │   ├── send.rs          # send_sms_async, send_new_sms_async
+│       │   └── views.rs         # view_conversation_list, view_message_thread
+│       │
+│       ├── media/               # Media player remote control
+│       │   ├── mod.rs           # Public exports
+│       │   ├── fetch.rs         # fetch_media_info_async, media_action_async
+│       │   └── views.rs         # view_media_controls, view_media_player
+│       │
+│       └── views/               # UI view components
+│           ├── mod.rs           # Public exports
+│           ├── helpers.rs       # popup_container, format_timestamp, format_duration
+│           ├── settings.rs      # view_settings, view_setting_toggle
+│           └── send_to.rs       # view_send_to
 │
 ├── kdeconnect-dbus/              # D-Bus interface crate
 │   ├── Cargo.toml
@@ -97,6 +116,26 @@ cosmic-connected-applet/
 └── reference/                    # Reference material (gitignored)
     └── kdeconnect-kde/          # KDE Connect source clone
 ```
+
+### Module Organization
+
+The applet crate is organized into feature-focused modules:
+
+| Module | Purpose |
+|--------|---------|
+| `app.rs` | Core application: ConnectApplet struct, Message enum, update() dispatcher |
+| `device/` | Device fetching and actions (ping, share, pairing, clipboard) |
+| `sms/` | SMS conversations: fetching, sending, and view rendering |
+| `media/` | Media player controls: fetching state and actions |
+| `views/` | Shared UI components: popup container, settings, send-to menu |
+| `subscriptions.rs` | D-Bus signal subscriptions for real-time updates |
+| `notifications.rs` | Cross-process notification deduplication |
+
+**Design principles:**
+- Message enum stays in `app.rs` - all modules import from app, avoiding circular dependencies
+- ConnectApplet struct stays in `app.rs` - state management remains centralized
+- View functions take params structs - views receive data, return `Element<Message>`
+- Async functions are standalone - take explicit parameters, return Message variants
 
 ## Technology Stack
 

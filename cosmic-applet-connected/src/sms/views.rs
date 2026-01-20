@@ -161,11 +161,9 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
         .center(Length::Fill)
         .into()
     } else if params.messages.is_empty() {
-        widget::container(
-            column![text(fl!("no-messages")).size(14),].align_x(Alignment::Center),
-        )
-        .center(Length::Fill)
-        .into()
+        widget::container(column![text(fl!("no-messages")).size(14),].align_x(Alignment::Center))
+            .center(Length::Fill)
+            .into()
     } else {
         // Build message list with improved styling
         // Max width for bubbles is ~75% of popup width for better readability
@@ -218,9 +216,7 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
 
             // Message bubble with appropriate styling
             let bubble_content = column![
-                text(&msg.body)
-                    .size(13)
-                    .wrapping(text::Wrapping::Word),
+                text(&msg.body).size(13).wrapping(text::Wrapping::Word),
                 text(time_str).size(9),
             ]
             .spacing(4);
@@ -290,14 +286,8 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
     };
 
     let compose_row = if is_group {
-        widget::container(
-            column![
-                row![compose_input].width(Length::Fill),
-                send_btn,
-            ]
-            .spacing(8),
-        )
-        .padding([8, 12])
+        widget::container(column![row![compose_input].width(Length::Fill), send_btn,].spacing(8))
+            .padding([8, 12])
     } else {
         widget::container(
             row![compose_input, send_btn,]
@@ -358,13 +348,9 @@ pub fn view_new_message(params: NewMessageParams<'_>) -> Element<'_, Message> {
     };
 
     let recipient_row = widget::container(
-        row![
-            text(fl!("to")).size(14),
-            recipient_input,
-            validation_icon,
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+        row![text(fl!("to")).size(14), recipient_input, validation_icon,]
+            .spacing(8)
+            .align_y(Alignment::Center),
     )
     .padding([8, 12]);
 
@@ -384,7 +370,8 @@ pub fn view_new_message(params: NewMessageParams<'_>) -> Element<'_, Message> {
                 widget::container(
                     row![
                         widget::icon::from_name("contact-new-symbolic").size(20),
-                        column![text(display_name).size(13), text(display_phone).size(11),].spacing(2),
+                        column![text(display_name).size(13), text(display_phone).size(11),]
+                            .spacing(2),
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),

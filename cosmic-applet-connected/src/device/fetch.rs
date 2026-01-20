@@ -91,10 +91,7 @@ pub async fn fetch_device_info(conn: &Connection, device_id: &str) -> Result<Dev
 }
 
 /// Fetch battery information for a device.
-pub async fn fetch_battery_info(
-    conn: &Connection,
-    device_id: &str,
-) -> (Option<i32>, Option<bool>) {
+pub async fn fetch_battery_info(conn: &Connection, device_id: &str) -> (Option<i32>, Option<bool>) {
     let path = format!(
         "{}/devices/{}/battery",
         kdeconnect_dbus::BASE_PATH,

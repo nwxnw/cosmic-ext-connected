@@ -102,7 +102,7 @@ pub async fn request_pair_async(conn: Arc<Mutex<Connection>>, device_id: String)
 
     match device.request_pair().await {
         Ok(()) => Message::PairingResult(Ok(
-            "Pairing request sent. Please accept on your device.".to_string(),
+            "Pairing request sent. Please accept on your device.".to_string()
         )),
         Err(e) => Message::PairingResult(Err(format!("Failed to request pairing: {}", e))),
     }
@@ -190,7 +190,7 @@ pub async fn dismiss_notification_async(
         },
         None => {
             return Message::DismissResult(Err(
-                "Failed to build notification proxy path".to_string(),
+                "Failed to build notification proxy path".to_string()
             ));
         }
     };

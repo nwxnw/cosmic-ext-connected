@@ -161,24 +161,22 @@ pub fn view_media_player(info: &MediaInfo) -> Element<'_, Message> {
         "media-playback-start-symbolic"
     };
 
-    let prev_button =
-        widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
-            .on_press_maybe(if info.can_previous {
-                Some(Message::MediaPrevious)
-            } else {
-                None
-            });
+    let prev_button = widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
+        .on_press_maybe(if info.can_previous {
+            Some(Message::MediaPrevious)
+        } else {
+            None
+        });
 
     let play_button =
         widget::button::icon(widget::icon::from_name(play_icon)).on_press(Message::MediaPlayPause);
 
-    let next_button =
-        widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
-            .on_press_maybe(if info.can_next {
-                Some(Message::MediaNext)
-            } else {
-                None
-            });
+    let next_button = widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
+        .on_press_maybe(if info.can_next {
+            Some(Message::MediaNext)
+        } else {
+            None
+        });
 
     let playback_controls = row![prev_button, play_button, next_button,]
         .spacing(16)

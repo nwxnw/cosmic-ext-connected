@@ -1,6 +1,9 @@
 //! Main application state and logic for the COSMIC Connected applet.
 
 use crate::config::Config;
+use crate::constants::{
+    dbus::SIGNAL_REFRESH_DEBOUNCE_SECS, notifications::FILE_TIMEOUT_MS, refresh,
+};
 use crate::device::{
     accept_pairing_async, dismiss_notification_async, fetch_devices_async, find_my_phone_async,
     reject_pairing_async, request_pair_async, send_clipboard_async, send_ping_async,
@@ -12,15 +15,17 @@ use crate::media::{
     MediaControlsParams,
 };
 use crate::sms::{
-    fetch_conversations_async, fetch_messages_async, fetch_older_messages_async, send_new_sms_async,
-    send_sms_async, view_conversation_list, view_message_thread, view_new_message,
-    ConversationListParams, MessageThreadParams, NewMessageParams,
+    fetch_conversations_async, fetch_messages_async, fetch_older_messages_async,
+    send_new_sms_async, send_sms_async, view_conversation_list, view_message_thread,
+    view_new_message, ConversationListParams, MessageThreadParams, NewMessageParams,
 };
 use crate::subscriptions::{
     call_notification_subscription, dbus_signal_subscription, sms_notification_subscription,
 };
 use crate::ui;
-use crate::views::helpers::{popup_container, DEFAULT_POPUP_WIDTH, POPUP_MAX_HEIGHT, WIDE_POPUP_WIDTH};
+use crate::views::helpers::{
+    popup_container, DEFAULT_POPUP_WIDTH, POPUP_MAX_HEIGHT, WIDE_POPUP_WIDTH,
+};
 use crate::views::send_to::{view_send_to, SendToParams};
 use crate::views::settings::view_settings;
 use cosmic::app::Core;
@@ -737,7 +742,8 @@ impl Application for ConnectApplet {
                 // D-Bus signal received - debounce to avoid excessive refreshes
                 // Require at least 3 seconds between signal-triggered refreshes
                 let now = std::time::Instant::now();
-                if now.duration_since(self.last_signal_refresh) < std::time::Duration::from_secs(3)
+                if now.duration_since(self.last_signal_refresh)
+                    < std::time::Duration::from_secs(SIGNAL_REFRESH_DEBOUNCE_SECS)
                 {
                     return cosmic::app::Task::none();
                 }
@@ -933,10 +939,8 @@ impl Application for ConnectApplet {
                 if let Some(conn) = &self.dbus_connection {
                     if let Some(device_id) = &self.sms_device_id {
                         // Find the conversation for header info and deduplication
-                        let conversation = self
-                            .conversations
-                            .iter()
-                            .find(|c| c.thread_id == thread_id);
+                        let conversation =
+                            self.conversations.iter().find(|c| c.thread_id == thread_id);
 
                         let addresses = conversation.map(|c| c.addresses.clone());
 
@@ -1087,7 +1091,11 @@ impl Application for ConnectApplet {
                         // Extract sub_id from the first message (for MMS group messaging)
                         if let Some(first_msg) = msgs.first() {
                             self.current_thread_sub_id = Some(first_msg.sub_id);
-                            tracing::debug!("Set sub_id to {} for thread {}", first_msg.sub_id, thread_id);
+                            tracing::debug!(
+                                "Set sub_id to {} for thread {}",
+                                first_msg.sub_id,
+                                thread_id
+                            );
                         }
 
                         // Update last_seen_sms with the newest message timestamp
@@ -1244,7 +1252,10 @@ impl Application for ConnectApplet {
                     self.current_thread_id,
                     &self.current_thread_addresses,
                 ) {
-                    if !self.sms_compose_text.is_empty() && !self.sms_sending && !addresses.is_empty() {
+                    if !self.sms_compose_text.is_empty()
+                        && !self.sms_sending
+                        && !addresses.is_empty()
+                    {
                         // Check if this is a group conversation (multiple unique recipients)
                         let mut unique_addresses = std::collections::HashSet::new();
                         for addr in addresses {
@@ -1253,7 +1264,10 @@ impl Application for ConnectApplet {
 
                         if unique_addresses.len() > 1 {
                             // Group MMS sending is not supported by KDE Connect
-                            tracing::warn!("Group MMS sending not supported ({} recipients)", unique_addresses.len());
+                            tracing::warn!(
+                                "Group MMS sending not supported ({} recipients)",
+                                unique_addresses.len()
+                            );
                             self.status_message = Some(fl!("group-sms-not-supported"));
                             return cosmic::app::Task::none();
                         }
@@ -1262,7 +1276,11 @@ impl Application for ConnectApplet {
                         let recipients = addresses.clone();
                         let sub_id = self.current_thread_sub_id.unwrap_or(-1);
                         self.sms_sending = true;
-                        tracing::info!("Dispatching send_sms_async with {} recipients, sub_id={}", recipients.len(), sub_id);
+                        tracing::info!(
+                            "Dispatching send_sms_async with {} recipients, sub_id={}",
+                            recipients.len(),
+                            sub_id
+                        );
                         return cosmic::app::Task::perform(
                             send_sms_async(
                                 conn.clone(),
@@ -1323,7 +1341,10 @@ impl Application for ConnectApplet {
                             return cosmic::app::Task::batch(vec![
                                 cosmic::app::Task::perform(
                                     async move {
-                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                        tokio::time::sleep(std::time::Duration::from_secs(
+                                            refresh::POST_SEND_DELAY_SECS,
+                                        ))
+                                        .await;
                                         thread_id
                                     },
                                     |tid| cosmic::Action::App(Message::DelayedMessageRefresh(tid)),
@@ -1781,7 +1802,7 @@ impl Application for ConnectApplet {
                                     .body(&file_name_clone)
                                     .icon("folder-download-symbolic")
                                     .appname("COSMIC Connected")
-                                    .timeout(notify_rust::Timeout::Milliseconds(5000)) // 5 second timeout
+                                    .timeout(notify_rust::Timeout::Milliseconds(FILE_TIMEOUT_MS))
                                     .show()
                             })
                             .await;
@@ -1950,8 +1971,10 @@ impl Application for ConnectApplet {
         // Add media refresh timer when in media view
         if self.view_mode == ViewMode::MediaControls {
             subscriptions.push(
-                cosmic::iced::time::every(std::time::Duration::from_secs(2))
-                    .map(|_| Message::MediaRefresh),
+                cosmic::iced::time::every(std::time::Duration::from_secs(
+                    refresh::MEDIA_INTERVAL_SECS,
+                ))
+                .map(|_| Message::MediaRefresh),
             );
         }
 
@@ -1979,4 +2002,3 @@ impl Application for ConnectApplet {
         Some(cosmic::applet::style())
     }
 }
-

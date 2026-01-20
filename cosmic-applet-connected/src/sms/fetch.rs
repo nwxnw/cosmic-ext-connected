@@ -1,6 +1,12 @@
 //! SMS conversation and message fetching from KDE Connect.
 
 use crate::app::Message;
+use crate::constants::sms::{
+    CONVERSATION_TIMEOUT_CACHED_SECS, CONVERSATION_TIMEOUT_INITIAL_SECS,
+    FALLBACK_POLLING_DELAYS_MS, FALLBACK_POLLING_INTERVAL_MS, MESSAGE_FETCH_TIMEOUT_SECS,
+    MIN_CONVERSATIONS_FOR_EARLY_STOP, SIGNAL_ACTIVITY_TIMEOUT_MS, SIGNAL_DRAIN_TIMEOUT_MS,
+    TIMEOUT_CHECK_INTERVAL_MS,
+};
 use futures_util::StreamExt;
 use kdeconnect_dbus::plugins::{
     parse_conversations, parse_messages, parse_sms_message, ConversationSummary,
@@ -12,10 +18,7 @@ use tokio::sync::Mutex;
 use zbus::Connection;
 
 /// Fetch SMS conversations for a device using signal-based loading.
-pub async fn fetch_conversations_async(
-    conn: Arc<Mutex<Connection>>,
-    device_id: String,
-) -> Message {
+pub async fn fetch_conversations_async(conn: Arc<Mutex<Connection>>, device_id: String) -> Message {
     let conn = conn.lock().await;
 
     // The conversations interface is on the device path
@@ -107,11 +110,11 @@ async fn fetch_conversations_via_signals(
     // Use longer timeout when no cache (need to wait for phone to send data)
     let has_cache = !conversations_map.is_empty();
     let overall_timeout = if has_cache {
-        tokio::time::Duration::from_secs(3) // Quick refresh when cache exists
+        tokio::time::Duration::from_secs(CONVERSATION_TIMEOUT_CACHED_SECS)
     } else {
-        tokio::time::Duration::from_secs(15) // Longer wait for initial load
+        tokio::time::Duration::from_secs(CONVERSATION_TIMEOUT_INITIAL_SECS)
     };
-    let activity_timeout = tokio::time::Duration::from_millis(500);
+    let activity_timeout = tokio::time::Duration::from_millis(SIGNAL_ACTIVITY_TIMEOUT_MS);
     let start_time = tokio::time::Instant::now();
     let mut last_activity = tokio::time::Instant::now();
     let mut loaded_signal_received = false;
@@ -191,8 +194,8 @@ async fn fetch_conversations_via_signals(
                 tracing::debug!("conversationLoaded signal received");
             }
 
-            // Check timeouts every 50ms
-            _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {
+            // Check timeouts periodically
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(TIMEOUT_CHECK_INTERVAL_MS)) => {
                 let elapsed = start_time.elapsed();
                 let since_activity = last_activity.elapsed();
 
@@ -261,7 +264,7 @@ async fn fetch_conversations_via_signals(
                     }
                 }
             }
-            _ = tokio::time::sleep(tokio::time::Duration::from_millis(5)) => {
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(SIGNAL_DRAIN_TIMEOUT_MS)) => {
                 break 'drain;
             }
         }
@@ -284,10 +287,9 @@ async fn fetch_conversations_fallback(conversations_proxy: &ConversationsProxy<'
     }
 
     // Poll with increasing delays
-    let delays = [500, 1000, 1500, 2000, 3000];
     let mut best_result: Vec<ConversationSummary> = Vec::new();
 
-    for (attempt, delay) in delays.iter().enumerate() {
+    for (attempt, delay) in FALLBACK_POLLING_DELAYS_MS.iter().enumerate() {
         tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
 
         match conversations_proxy.active_conversations().await {
@@ -305,7 +307,7 @@ async fn fetch_conversations_fallback(conversations_proxy: &ConversationsProxy<'
                 }
 
                 // Stop early if we have enough conversations
-                if best_result.len() >= 5 {
+                if best_result.len() >= MIN_CONVERSATIONS_FOR_EARLY_STOP {
                     tracing::info!(
                         "Fallback: Found {} conversations, stopping early",
                         best_result.len()
@@ -393,7 +395,7 @@ pub async fn fetch_messages_async(
     // Collect messages from signals until conversationLoaded or timeout
     // Use uid (unique message ID) as key for reliable deduplication
     let mut messages_map: HashMap<i32, SmsMessage> = HashMap::new();
-    let timeout = tokio::time::Duration::from_secs(10);
+    let timeout = tokio::time::Duration::from_secs(MESSAGE_FETCH_TIMEOUT_SECS);
     let start_time = tokio::time::Instant::now();
 
     loop {
@@ -447,7 +449,7 @@ pub async fn fetch_messages_async(
                                             }
                                         }
                                     }
-                                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(5)) => {
+                                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(SIGNAL_DRAIN_TIMEOUT_MS)) => {
                                         // No more signals available, done draining
                                         break 'drain;
                                     }
@@ -506,7 +508,10 @@ async fn fetch_messages_fallback(
     // Simple polling fallback
     let mut messages = Vec::new();
     for attempt in 0..5 {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(
+            FALLBACK_POLLING_INTERVAL_MS,
+        ))
+        .await;
 
         match conversations_proxy.active_conversations().await {
             Ok(values) => {
@@ -603,7 +608,7 @@ pub async fn fetch_older_messages_async(
     // Collect messages from signals until conversationLoaded or timeout
     // Use uid (unique message ID) as key for reliable deduplication
     let mut messages_map: HashMap<i32, SmsMessage> = HashMap::new();
-    let timeout = tokio::time::Duration::from_secs(10);
+    let timeout = tokio::time::Duration::from_secs(MESSAGE_FETCH_TIMEOUT_SECS);
     let start_time = tokio::time::Instant::now();
 
     loop {
@@ -652,7 +657,7 @@ pub async fn fetch_older_messages_async(
                                             }
                                         }
                                     }
-                                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(5)) => {
+                                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(SIGNAL_DRAIN_TIMEOUT_MS)) => {
                                         break 'drain;
                                     }
                                 }

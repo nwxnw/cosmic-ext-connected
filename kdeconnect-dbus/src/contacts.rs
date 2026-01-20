@@ -85,9 +85,7 @@ impl ContactLookup {
                             // Store in suffix map for fuzzy matching
                             // (only if suffix differs from full, to avoid duplicates)
                             if suffix.len() >= MIN_PHONE_DIGITS {
-                                lookup
-                                    .suffix_to_name
-                                    .insert(suffix, contact.name.clone());
+                                lookup.suffix_to_name.insert(suffix, contact.name.clone());
                             }
                         }
                     }
