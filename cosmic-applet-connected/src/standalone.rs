@@ -1232,7 +1232,7 @@ impl Application for StandaloneApp {
         } else if self.devices.is_empty() {
             widget::container(
                 column![
-                    widget::icon::from_name("phone-disconnect-symbolic").size(48),
+                    widget::icon::from_name("call-stop-symbolic").size(48),
                     text(fl!("no-devices-found")).size(18),
                     text(fl!("no-devices-hint")).size(14),
                     text(fl!("no-devices-hint-extended")).size(14),
@@ -1660,7 +1660,7 @@ impl StandaloneApp {
             let status_icon = if device.is_reachable && device.is_paired {
                 "phone-symbolic"
             } else if device.is_paired {
-                "phone-disconnect-symbolic"
+                "call-stop-symbolic"
             } else {
                 "phone-symbolic"
             };

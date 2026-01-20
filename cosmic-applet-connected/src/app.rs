@@ -1907,7 +1907,7 @@ impl Application for ConnectApplet {
         let icon_name = if self.devices.iter().any(|d| d.is_reachable && d.is_paired) {
             "phone-symbolic"
         } else {
-            "phone-disconnect-symbolic"
+            "call-stop-symbolic"
         };
 
         self.core
