@@ -47,14 +47,58 @@ loop {
 }
 ```
 
-### Message Thread Loading
+### Message Thread Loading (Subscription-Based)
 
-Individual message threads use a similar pattern:
+Individual message threads use a **subscription-based** approach for incremental display:
 
-1. Subscribe to `conversationUpdated` and `conversationLoaded` signals
-2. Call `requestConversation(thread_id, start, count)` to request messages
-3. Collect messages from `conversationUpdated` signals as they arrive
-4. Stop collecting when `conversationLoaded` signal is received for that thread
+```
+OpenConversation → Set state, activate subscription
+                            ↓
+         Subscription sets up D-Bus match rules
+                            ↓
+         Subscription fires requestConversation() D-Bus call
+                            ↓
+         conversationUpdated signals → ConversationMessageReceived messages
+                            ↓
+         conversationLoaded signal → ConversationLoadComplete message
+```
+
+**Key implementation details:**
+
+1. `conversation_message_subscription` in `subscriptions.rs` handles the entire flow
+2. Match rules are set up BEFORE firing the D-Bus request (prevents race conditions)
+3. Messages arrive via `ConversationMessageReceived` and are inserted sorted by date
+4. After each message insert, scroll-to-bottom keeps newest messages visible
+5. `ConversationLoadComplete` finalizes state when `conversationLoaded` signal arrives
+
+```rust
+// In subscriptions.rs - subscription fires request after setup
+let stream = zbus::MessageStream::from(&conn);
+
+// NOW fire request - after match rules are ready
+conversations_proxy.request_conversation(thread_id, 0, count).await?;
+
+// Listen for signals...
+```
+
+```rust
+// In app.rs - incremental display with scroll anchoring
+Message::ConversationMessageReceived { thread_id, message } => {
+    // Insert sorted by date
+    let insert_pos = self.messages.iter()
+        .position(|m| m.date > message.date)
+        .unwrap_or(self.messages.len());
+    self.messages.insert(insert_pos, message);
+
+    // Scroll to bottom after each insert (keeps newest visible)
+    return scrollable::snap_to(Id::new("message-thread"), RelativeOffset::END);
+}
+```
+
+**Benefits over blocking approach:**
+- Messages appear immediately as they arrive (no timeout delay)
+- Scroll stays anchored to newest messages during loading
+- No arbitrary timeouts - completion signaled by `conversationLoaded`
 
 ## Loading States
 

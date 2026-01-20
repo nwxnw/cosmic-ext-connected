@@ -1,11 +1,21 @@
 //! SMS conversation and message fetching from KDE Connect.
+//!
+//! This module provides two approaches for loading conversations:
+//!
+//! 1. **Fast cached loading** (`fetch_cached_conversations_async`): Returns immediately
+//!    with whatever the daemon has cached. Used for instant UI display.
+//!
+//! 2. **Full signal-based sync** (`fetch_conversations_async`): Subscribes to D-Bus signals
+//!    and waits for the phone to send fresh data. Used for background sync.
+//!
+//! The recommended pattern is to use both: show cached data immediately, then
+//! refresh in the background for a responsive user experience.
 
 use crate::app::Message;
 use crate::constants::sms::{
     CONVERSATION_TIMEOUT_CACHED_SECS, CONVERSATION_TIMEOUT_INITIAL_SECS,
     FALLBACK_POLLING_DELAYS_MS, FALLBACK_POLLING_INTERVAL_MS, MESSAGE_FETCH_TIMEOUT_SECS,
-    MIN_CONVERSATIONS_FOR_EARLY_STOP, SIGNAL_ACTIVITY_TIMEOUT_MS, SIGNAL_DRAIN_TIMEOUT_MS,
-    TIMEOUT_CHECK_INTERVAL_MS,
+    SIGNAL_ACTIVITY_TIMEOUT_MS, SIGNAL_DRAIN_TIMEOUT_MS, TIMEOUT_CHECK_INTERVAL_MS,
 };
 use futures_util::StreamExt;
 use kdeconnect_dbus::plugins::{
@@ -16,6 +26,55 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use zbus::Connection;
+
+/// Fetch cached SMS conversations immediately (fast initial display).
+///
+/// This function returns whatever the daemon has cached without waiting for
+/// the phone to sync. It's designed for instant UI display. Use
+/// `fetch_conversations_async` afterwards for a full background sync.
+pub async fn fetch_cached_conversations_async(
+    conn: Arc<Mutex<Connection>>,
+    device_id: String,
+) -> Message {
+    let conn = conn.lock().await;
+
+    // The conversations interface is on the device path
+    let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
+
+    // Build conversations proxy on the device path
+    let conversations_proxy = match ConversationsProxy::builder(&conn)
+        .path(device_path.as_str())
+        .ok()
+        .map(|b| b.build())
+    {
+        Some(fut) => match fut.await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to create conversations proxy for cache: {}", e);
+                return Message::ConversationsCached(Vec::new());
+            }
+        },
+        None => {
+            return Message::ConversationsCached(Vec::new());
+        }
+    };
+
+    // Get cached conversations immediately (don't request from phone)
+    match conversations_proxy.active_conversations().await {
+        Ok(values) => {
+            let conversations = parse_conversations(values);
+            tracing::info!(
+                "Loaded {} cached conversations for immediate display",
+                conversations.len()
+            );
+            Message::ConversationsCached(conversations)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to get cached conversations: {}", e);
+            Message::ConversationsCached(Vec::new())
+        }
+    }
+}
 
 /// Fetch SMS conversations for a device using signal-based loading.
 pub async fn fetch_conversations_async(conn: Arc<Mutex<Connection>>, device_id: String) -> Message {
@@ -286,7 +345,8 @@ async fn fetch_conversations_fallback(conversations_proxy: &ConversationsProxy<'
         tracing::warn!("Fallback: Failed to request conversation threads: {}", e);
     }
 
-    // Poll with increasing delays
+    // Poll with increasing delays, collecting all available conversations
+    // Note: We don't stop early anymore - the phone may be slow to sync all conversations
     let mut best_result: Vec<ConversationSummary> = Vec::new();
 
     for (attempt, delay) in FALLBACK_POLLING_DELAYS_MS.iter().enumerate() {
@@ -304,15 +364,6 @@ async fn fetch_conversations_fallback(conversations_proxy: &ConversationsProxy<'
                 // Keep the best result
                 if conversations.len() > best_result.len() {
                     best_result = conversations;
-                }
-
-                // Stop early if we have enough conversations
-                if best_result.len() >= MIN_CONVERSATIONS_FOR_EARLY_STOP {
-                    tracing::info!(
-                        "Fallback: Found {} conversations, stopping early",
-                        best_result.len()
-                    );
-                    break;
                 }
             }
             Err(e) => {
@@ -392,16 +443,21 @@ pub async fn fetch_messages_async(
         return Message::SmsError(format!("Failed to request conversation: {}", e));
     }
 
-    // Collect messages from signals until conversationLoaded or timeout
+    // Collect messages from signals until conversationLoaded, activity timeout, or hard timeout
     // Use uid (unique message ID) as key for reliable deduplication
     let mut messages_map: HashMap<i32, SmsMessage> = HashMap::new();
     let mut total_message_count: Option<u64> = None;
     let timeout = tokio::time::Duration::from_secs(MESSAGE_FETCH_TIMEOUT_SECS);
+    let activity_timeout = tokio::time::Duration::from_millis(SIGNAL_ACTIVITY_TIMEOUT_MS);
+    let check_interval = tokio::time::Duration::from_millis(TIMEOUT_CHECK_INTERVAL_MS);
     let start_time = tokio::time::Instant::now();
+    let mut last_activity = tokio::time::Instant::now();
+    let mut loaded_signal_received = false;
 
     loop {
         tokio::select! {
-            // Check for conversationUpdated signals
+            biased;
+            // Check for conversationUpdated signals (highest priority)
             Some(signal) = updated_stream.next() => {
                 match signal.args() {
                     Ok(args) => {
@@ -409,6 +465,7 @@ pub async fn fetch_messages_async(
                             if msg.thread_id == thread_id {
                                 // Use uid as key for reliable deduplication
                                 messages_map.insert(msg.uid, msg);
+                                last_activity = tokio::time::Instant::now();
                                 tracing::debug!(
                                     "Received message for thread {}, total: {}",
                                     thread_id,
@@ -429,41 +486,15 @@ pub async fn fetch_messages_async(
                         if args.conversation_id == thread_id {
                             // Capture the total message count for pagination
                             total_message_count = Some(args.message_count);
+                            loaded_signal_received = true;
+                            last_activity = tokio::time::Instant::now();
                             tracing::info!(
-                                "Conversation {} loaded, total {} messages, got {}",
+                                "Conversation {} loaded signal received, total {} messages, got {}",
                                 thread_id,
                                 args.message_count,
                                 messages_map.len()
                             );
-                            // Drain any remaining buffered conversationUpdated signals
-                            'drain: loop {
-                                tokio::select! {
-                                    biased;
-                                    Some(signal) = updated_stream.next() => {
-                                        if let Ok(args) = signal.args() {
-                                            if let Some(msg) = parse_sms_message(&args.msg) {
-                                                if msg.thread_id == thread_id {
-                                                    messages_map.insert(msg.uid, msg);
-                                                    tracing::debug!(
-                                                        "Drained message, total: {}",
-                                                        messages_map.len()
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(SIGNAL_DRAIN_TIMEOUT_MS)) => {
-                                        // No more signals available, done draining
-                                        break 'drain;
-                                    }
-                                }
-                            }
-                            tracing::info!(
-                                "After drain: {} messages for thread {}",
-                                messages_map.len(),
-                                thread_id
-                            );
-                            break;
+                            // Don't break immediately - continue to drain buffered signals
                         }
                     }
                     Err(e) => {
@@ -471,13 +502,40 @@ pub async fn fetch_messages_async(
                     }
                 }
             }
-            // Timeout
-            _ = tokio::time::sleep_until(start_time + timeout) => {
-                tracing::warn!(
-                    "Timeout waiting for messages, got {} messages",
-                    messages_map.len()
-                );
-                break;
+            // Periodic timeout check
+            _ = tokio::time::sleep(check_interval) => {
+                let elapsed = start_time.elapsed();
+                let since_activity = last_activity.elapsed();
+
+                // Hard timeout
+                if elapsed >= timeout {
+                    tracing::warn!(
+                        "Hard timeout ({:?}) waiting for messages, got {} messages",
+                        timeout,
+                        messages_map.len()
+                    );
+                    break;
+                }
+
+                // Activity timeout: if we have messages and no activity for a while, we're done
+                // This prevents waiting the full 10s when signals stop coming
+                if !messages_map.is_empty() && since_activity >= activity_timeout {
+                    tracing::info!(
+                        "Activity timeout ({:?} since last signal), got {} messages",
+                        since_activity,
+                        messages_map.len()
+                    );
+                    break;
+                }
+
+                // If we received conversationLoaded and drained signals, we're done
+                if loaded_signal_received && since_activity >= tokio::time::Duration::from_millis(SIGNAL_DRAIN_TIMEOUT_MS) {
+                    tracing::info!(
+                        "Loaded signal received and signals drained, got {} messages",
+                        messages_map.len()
+                    );
+                    break;
+                }
             }
         }
     }
@@ -509,8 +567,9 @@ async fn fetch_messages_fallback(
         tracing::warn!("Failed to request conversation: {}", e);
     }
 
-    // Simple polling fallback
-    let mut messages = Vec::new();
+    // Simple polling fallback - poll all attempts to give phone time to sync
+    // Note: We don't stop early anymore - the phone may be slow to sync messages
+    let mut best_messages = Vec::new();
     for attempt in 0..5 {
         tokio::time::sleep(std::time::Duration::from_millis(
             FALLBACK_POLLING_INTERVAL_MS,
@@ -519,15 +578,16 @@ async fn fetch_messages_fallback(
 
         match conversations_proxy.active_conversations().await {
             Ok(values) => {
-                messages = parse_messages(values, thread_id);
+                let messages = parse_messages(values, thread_id);
                 tracing::info!(
                     "Fallback attempt {}: Found {} messages for thread {}",
                     attempt + 1,
                     messages.len(),
                     thread_id
                 );
-                if messages.len() > 1 {
-                    break;
+                // Keep the best result
+                if messages.len() > best_messages.len() {
+                    best_messages = messages;
                 }
             }
             Err(e) => {
@@ -536,8 +596,13 @@ async fn fetch_messages_fallback(
         }
     }
 
+    tracing::info!(
+        "Fallback complete: {} messages for thread {}",
+        best_messages.len(),
+        thread_id
+    );
     // Fallback doesn't receive conversationLoaded signal, so total_count is unknown
-    Message::MessagesLoaded(thread_id, messages, None)
+    Message::MessagesLoaded(thread_id, best_messages, None)
 }
 
 /// Fetch older messages for pagination (starting from a given offset).
@@ -707,3 +772,4 @@ pub async fn fetch_older_messages_async(
     );
     Message::OlderMessagesLoaded(thread_id, messages, has_more_heuristic, total_message_count)
 }
+

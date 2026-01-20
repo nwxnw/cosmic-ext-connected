@@ -58,6 +58,8 @@ pub struct ConversationListParams<'a> {
     pub conversations_displayed: usize,
     pub contacts: &'a ContactLookup,
     pub loading_state: &'a SmsLoadingState,
+    /// Whether background sync is active (syncing conversations from phone)
+    pub sync_active: bool,
 }
 
 /// Render the SMS conversation list view.
@@ -65,17 +67,34 @@ pub fn view_conversation_list(params: ConversationListParams<'_>) -> Element<'_,
     let default_device = fl!("device");
     let device_name = params.device_name.unwrap_or(&default_device);
 
-    let header = row![
+    // Build header with optional sync indicator
+    let mut header_row = row![
         widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
             .on_press(Message::CloseSmsView),
         text(fl!("messages-title", device = device_name)).size(16),
-        widget::horizontal_space(),
-        widget::button::icon(widget::icon::from_name("list-add-symbolic"))
-            .on_press(Message::OpenNewMessage),
     ]
     .spacing(8)
-    .align_y(Alignment::Center)
-    .padding([8, 12]);
+    .align_y(Alignment::Center);
+
+    // Show sync indicator when background sync is active
+    if params.sync_active {
+        header_row = header_row.push(
+            widget::tooltip(
+                widget::icon::from_name("emblem-synchronizing-symbolic").size(16),
+                text(fl!("syncing")).size(12),
+                widget::tooltip::Position::Bottom,
+            )
+            .padding(4),
+        );
+    }
+
+    let header = header_row
+        .push(widget::horizontal_space())
+        .push(
+            widget::button::icon(widget::icon::from_name("list-add-symbolic"))
+                .on_press(Message::OpenNewMessage),
+        )
+        .padding([8, 12]);
 
     let content: Element<Message> = if is_loading_conversations(params.loading_state)
         && params.conversations.is_empty()
@@ -175,6 +194,8 @@ pub struct MessageThreadParams<'a> {
     pub sms_compose_text: &'a str,
     pub sms_sending: bool,
     pub messages_has_more: bool,
+    /// Whether background sync is active (syncing messages from phone)
+    pub sync_active: bool,
 }
 
 /// Render the SMS message thread view.
@@ -187,16 +208,33 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
         .unwrap_or(&default_unknown);
     let display_name = params.contacts.get_name_or_number(address);
 
-    let header = row![
+    // Build header with optional sync indicator
+    let mut header_row = row![
         widget::button::icon(widget::icon::from_name("go-previous-symbolic"))
             .on_press(Message::CloseConversation),
         text(display_name).size(16),
-        widget::horizontal_space(),
     ]
     .spacing(8)
-    .align_y(Alignment::Center)
-    .padding([8, 12]);
+    .align_y(Alignment::Center);
 
+    // Show sync indicator when background sync is active
+    if params.sync_active {
+        header_row = header_row.push(
+            widget::tooltip(
+                widget::icon::from_name("emblem-synchronizing-symbolic").size(16),
+                text(fl!("syncing")).size(12),
+                widget::tooltip::Position::Bottom,
+            )
+            .padding(4),
+        );
+    }
+
+    let header = header_row
+        .push(widget::horizontal_space())
+        .padding([8, 12]);
+
+    // Show loading indicator only when loading AND no messages yet
+    // Once messages start arriving, show them (scrolled to bottom)
     let content: Element<Message> = if is_loading_messages(params.loading_state)
         && params.messages.is_empty()
     {
@@ -300,6 +338,7 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
         widget::scrollable(msg_column)
             .id(widget::Id::new("message-thread"))
             .width(Length::Fill)
+            .height(Length::Fill)
             .on_scroll(Message::MessageThreadScrolled)
             .into()
     };

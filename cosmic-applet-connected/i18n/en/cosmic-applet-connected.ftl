@@ -134,6 +134,7 @@ sms-will-appear = SMS messages will appear here
 load-older-messages = Load older messages
 loading-older = Loading...
 load-more-conversations = Load more conversations
+syncing = Syncing with phone...
 
 # New message
 new-message = New Message

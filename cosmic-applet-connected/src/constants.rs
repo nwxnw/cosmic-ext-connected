@@ -39,10 +39,8 @@ pub mod sms {
     /// Interval for polling in fallback mode (milliseconds).
     pub const FALLBACK_POLLING_INTERVAL_MS: u64 = 500;
 
-    /// Minimum conversations required for early stop in fallback mode.
-    pub const MIN_CONVERSATIONS_FOR_EARLY_STOP: usize = 5;
-
     /// Polling delays for fallback conversation loading (milliseconds).
+    /// We poll multiple times with increasing delays to give the phone time to sync.
     pub const FALLBACK_POLLING_DELAYS_MS: &[u64] = &[500, 1000, 1500, 2000, 3000];
 
     /// Maximum number of conversation message threads to cache.

@@ -552,3 +552,318 @@ pub fn call_notification_subscription() -> impl futures_util::Stream<Item = Mess
         }
     })
 }
+
+/// State for conversation message subscription (incremental message loading).
+#[allow(clippy::large_enum_variant)]
+enum ConversationMessageState {
+    Init {
+        thread_id: i64,
+        device_id: String,
+        messages_per_page: u32,
+    },
+    Listening {
+        #[allow(dead_code)]
+        conn: Connection,
+        stream: zbus::MessageStream,
+        thread_id: i64,
+        device_id: String,
+        messages_per_page: u32,
+    },
+}
+
+/// Create a stream that listens for conversation messages during loading.
+///
+/// This subscription handles incremental message loading by:
+/// 1. Setting up D-Bus match rules for signals
+/// 2. Firing the request_conversation D-Bus call (AFTER rules are set up)
+/// 3. Listening for `conversationUpdated` signals (individual messages)
+/// 4. Emitting `ConversationLoadComplete` when `conversationLoaded` signal arrives
+///
+/// The request is fired from within the subscription to avoid race conditions
+/// where signals arrive before we're ready to receive them.
+pub fn conversation_message_subscription(
+    thread_id: i64,
+    device_id: String,
+    messages_per_page: u32,
+) -> impl futures_util::Stream<Item = Message> {
+    futures_util::stream::unfold(
+        ConversationMessageState::Init {
+            thread_id,
+            device_id,
+            messages_per_page,
+        },
+        |state| async move {
+            match state {
+                ConversationMessageState::Init {
+                    thread_id,
+                    device_id,
+                    messages_per_page,
+                } => {
+                    // Connect to D-Bus
+                    let conn = match Connection::session().await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to connect to D-Bus for conversation messages: {}",
+                                e
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(RETRY_DELAY_SECS))
+                                .await;
+                            return Some((
+                                Message::SmsError("D-Bus connection failed for conversation".to_string()),
+                                ConversationMessageState::Init {
+                                    thread_id,
+                                    device_id,
+                                    messages_per_page,
+                                },
+                            ));
+                        }
+                    };
+
+                    // Add match rule for conversationUpdated signals
+                    let dbus_proxy = match zbus::fdo::DBusProxy::new(&conn).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::error!("Failed to create DBus proxy for conversation: {}", e);
+                            return Some((
+                                Message::SmsError("D-Bus proxy failed for conversation".to_string()),
+                                ConversationMessageState::Init {
+                                    thread_id,
+                                    device_id,
+                                    messages_per_page,
+                                },
+                            ));
+                        }
+                    };
+
+                    // Subscribe to conversationUpdated signals (individual messages)
+                    let updated_rule = zbus::MatchRule::builder()
+                        .msg_type(zbus::message::Type::Signal)
+                        .interface("org.kde.kdeconnect.device.conversations")
+                        .and_then(|b| b.member("conversationUpdated"))
+                        .map(|b| b.build());
+
+                    if let Ok(rule) = updated_rule {
+                        if let Err(e) = dbus_proxy.add_match_rule(rule).await {
+                            tracing::warn!("Failed to add conversationUpdated match rule: {}", e);
+                        } else {
+                            tracing::debug!(
+                                "Added match rule for conversation {} message signals",
+                                thread_id
+                            );
+                        }
+                    }
+
+                    // Subscribe to conversationLoaded signals (completion marker)
+                    let loaded_rule = zbus::MatchRule::builder()
+                        .msg_type(zbus::message::Type::Signal)
+                        .interface("org.kde.kdeconnect.device.conversations")
+                        .and_then(|b| b.member("conversationLoaded"))
+                        .map(|b| b.build());
+
+                    if let Ok(rule) = loaded_rule {
+                        if let Err(e) = dbus_proxy.add_match_rule(rule).await {
+                            tracing::warn!("Failed to add conversationLoaded match rule: {}", e);
+                        } else {
+                            tracing::debug!(
+                                "Added match rule for conversation {} loaded signal",
+                                thread_id
+                            );
+                        }
+                    }
+
+                    // Create message stream BEFORE firing request
+                    let stream = zbus::MessageStream::from(&conn);
+
+                    // NOW fire the D-Bus request - after match rules are set up
+                    // This ensures we don't miss any signals
+                    let device_path = format!(
+                        "{}/devices/{}",
+                        kdeconnect_dbus::BASE_PATH,
+                        device_id
+                    );
+                    match kdeconnect_dbus::plugins::ConversationsProxy::builder(&conn)
+                        .path(device_path.as_str())
+                        .ok()
+                        .map(|b| b.build())
+                    {
+                        Some(fut) => match fut.await {
+                            Ok(conversations_proxy) => {
+                                tracing::debug!(
+                                    "Firing request_conversation for thread {} (messages 0-{})",
+                                    thread_id,
+                                    messages_per_page
+                                );
+                                if let Err(e) = conversations_proxy
+                                    .request_conversation(thread_id, 0, messages_per_page as i32)
+                                    .await
+                                {
+                                    tracing::warn!("Failed to request conversation: {}", e);
+                                    return Some((
+                                        Message::SmsError(format!(
+                                            "Failed to request conversation: {}",
+                                            e
+                                        )),
+                                        ConversationMessageState::Init {
+                                            thread_id,
+                                            device_id,
+                                            messages_per_page,
+                                        },
+                                    ));
+                                }
+                                tracing::info!(
+                                    "Conversation {} request sent, listening for signals",
+                                    thread_id
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create conversations proxy: {}", e);
+                                return Some((
+                                    Message::SmsError(format!(
+                                        "Failed to create conversations proxy: {}",
+                                        e
+                                    )),
+                                    ConversationMessageState::Init {
+                                        thread_id,
+                                        device_id,
+                                        messages_per_page,
+                                    },
+                                ));
+                            }
+                        },
+                        None => {
+                            return Some((
+                                Message::SmsError(
+                                    "Failed to build conversations proxy path".to_string(),
+                                ),
+                                ConversationMessageState::Init {
+                                    thread_id,
+                                    device_id,
+                                    messages_per_page,
+                                },
+                            ));
+                        }
+                    }
+
+                    // Move to listening state, emit started message
+                    Some((
+                        Message::ConversationLoadStarted { thread_id },
+                        ConversationMessageState::Listening {
+                            conn,
+                            stream,
+                            thread_id,
+                            device_id,
+                            messages_per_page,
+                        },
+                    ))
+                }
+                ConversationMessageState::Listening {
+                    conn,
+                    mut stream,
+                    thread_id,
+                    device_id,
+                    messages_per_page,
+                } => {
+                    // Wait for conversation signals
+                    loop {
+                        match stream.next().await {
+                            Some(Ok(msg)) => {
+                                if msg.header().message_type() == zbus::message::Type::Signal {
+                                    if let (Some(interface), Some(member)) =
+                                        (msg.header().interface(), msg.header().member())
+                                    {
+                                        let iface_str = interface.as_str();
+                                        let member_str = member.as_str();
+
+                                        // Handle conversationUpdated signals (individual messages)
+                                        if iface_str == "org.kde.kdeconnect.device.conversations"
+                                            && member_str == "conversationUpdated"
+                                        {
+                                            let body = msg.body();
+                                            if let Ok(value) =
+                                                body.deserialize::<zbus::zvariant::OwnedValue>()
+                                            {
+                                                if let Some(sms_msg) = parse_sms_message(&value) {
+                                                    // Only process messages for our thread
+                                                    if sms_msg.thread_id == thread_id {
+                                                        tracing::debug!(
+                                                            "Subscription: received message uid={} for thread {}",
+                                                            sms_msg.uid,
+                                                            thread_id
+                                                        );
+                                                        return Some((
+                                                            Message::ConversationMessageReceived {
+                                                                thread_id,
+                                                                message: sms_msg,
+                                                            },
+                                                            ConversationMessageState::Listening {
+                                                                conn,
+                                                                stream,
+                                                                thread_id,
+                                                                device_id,
+                                                                messages_per_page,
+                                                            },
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Handle conversationLoaded signals (completion)
+                                        if iface_str == "org.kde.kdeconnect.device.conversations"
+                                            && member_str == "conversationLoaded"
+                                        {
+                                            let body = msg.body();
+                                            // Signal args: (conversationId: i64, messageCount: u64)
+                                            if let Ok((conv_id, message_count)) =
+                                                body.deserialize::<(i64, u64)>()
+                                            {
+                                                if conv_id == thread_id {
+                                                    tracing::info!(
+                                                        "Subscription: conversation {} loaded, {} total messages",
+                                                        thread_id,
+                                                        message_count
+                                                    );
+                                                    return Some((
+                                                        Message::ConversationLoadComplete {
+                                                            thread_id,
+                                                            total_count: message_count,
+                                                        },
+                                                        ConversationMessageState::Listening {
+                                                            conn,
+                                                            stream,
+                                                            thread_id,
+                                                            device_id,
+                                                            messages_per_page,
+                                                        },
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                tracing::warn!("D-Bus conversation stream error: {}", e);
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "D-Bus conversation stream ended for thread {}, reconnecting...",
+                                    thread_id
+                                );
+                                return Some((
+                                    Message::SmsError("Conversation stream ended".to_string()),
+                                    ConversationMessageState::Init {
+                                        thread_id,
+                                        device_id,
+                                        messages_per_page,
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
