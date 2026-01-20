@@ -277,11 +277,21 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
                     cosmic::theme::Container::Primary
                 });
 
-            // Align based on message direction
-            let msg_row = if is_received {
-                row![bubble, widget::horizontal_space(),]
+            // Received messages: show sender name above and align left
+            // Sent messages: align right
+            let msg_row: Element<Message> = if is_received {
+                let sender_name = params.contacts.get_name_or_number(msg.primary_address());
+                column![
+                    text(sender_name).size(11),
+                    row![bubble, widget::horizontal_space(),].width(Length::Fill),
+                ]
+                .spacing(4)
+                .width(Length::Fill)
+                .into()
             } else {
                 row![widget::horizontal_space(), bubble,]
+                    .width(Length::Fill)
+                    .into()
             };
 
             msg_column = msg_column.push(msg_row);

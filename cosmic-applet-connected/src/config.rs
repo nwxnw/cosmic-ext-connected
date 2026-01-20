@@ -38,7 +38,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             show_battery_percentage: true,
-            show_offline_devices: false,
+            show_offline_devices: true,
             forward_notifications: true,
             messages_per_page: 10,
             sms_notifications: true,
