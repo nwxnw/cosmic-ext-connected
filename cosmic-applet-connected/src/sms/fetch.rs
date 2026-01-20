@@ -395,6 +395,7 @@ pub async fn fetch_messages_async(
     // Collect messages from signals until conversationLoaded or timeout
     // Use uid (unique message ID) as key for reliable deduplication
     let mut messages_map: HashMap<i32, SmsMessage> = HashMap::new();
+    let mut total_message_count: Option<u64> = None;
     let timeout = tokio::time::Duration::from_secs(MESSAGE_FETCH_TIMEOUT_SECS);
     let start_time = tokio::time::Instant::now();
 
@@ -426,8 +427,10 @@ pub async fn fetch_messages_async(
                 match signal.args() {
                     Ok(args) => {
                         if args.conversation_id == thread_id {
+                            // Capture the total message count for pagination
+                            total_message_count = Some(args.message_count);
                             tracing::info!(
-                                "Conversation {} loaded, expected {} messages, got {}",
+                                "Conversation {} loaded, total {} messages, got {}",
                                 thread_id,
                                 args.message_count,
                                 messages_map.len()
@@ -484,11 +487,12 @@ pub async fn fetch_messages_async(
     messages.sort_by(|a, b| a.date.cmp(&b.date));
 
     tracing::info!(
-        "Final: Loaded {} messages for thread {}",
+        "Final: Loaded {} messages for thread {} (total in conversation: {:?})",
         messages.len(),
-        thread_id
+        thread_id,
+        total_message_count
     );
-    Message::MessagesLoaded(thread_id, messages)
+    Message::MessagesLoaded(thread_id, messages, total_message_count)
 }
 
 /// Fallback message fetching using simple polling when signal subscription fails.
@@ -532,7 +536,8 @@ async fn fetch_messages_fallback(
         }
     }
 
-    Message::MessagesLoaded(thread_id, messages)
+    // Fallback doesn't receive conversationLoaded signal, so total_count is unknown
+    Message::MessagesLoaded(thread_id, messages, None)
 }
 
 /// Fetch older messages for pagination (starting from a given offset).
@@ -558,11 +563,11 @@ pub async fn fetch_older_messages_async(
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("Failed to create conversations proxy: {}", e);
-                return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
+                return Message::OlderMessagesLoaded(thread_id, Vec::new(), false, None);
             }
         },
         None => {
-            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
+            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false, None);
         }
     };
 
@@ -574,7 +579,7 @@ pub async fn fetch_older_messages_async(
                 "Failed to subscribe to conversationUpdated for older messages: {}",
                 e
             );
-            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
+            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false, None);
         }
     };
 
@@ -586,7 +591,7 @@ pub async fn fetch_older_messages_async(
                 "Failed to subscribe to conversationLoaded for older messages: {}",
                 e
             );
-            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
+            return Message::OlderMessagesLoaded(thread_id, Vec::new(), false, None);
         }
     };
 
@@ -602,12 +607,13 @@ pub async fn fetch_older_messages_async(
         .await
     {
         tracing::warn!("Failed to request older messages: {}", e);
-        return Message::OlderMessagesLoaded(thread_id, Vec::new(), false);
+        return Message::OlderMessagesLoaded(thread_id, Vec::new(), false, None);
     }
 
     // Collect messages from signals until conversationLoaded or timeout
     // Use uid (unique message ID) as key for reliable deduplication
     let mut messages_map: HashMap<i32, SmsMessage> = HashMap::new();
+    let mut total_message_count: Option<u64> = None;
     let timeout = tokio::time::Duration::from_secs(MESSAGE_FETCH_TIMEOUT_SECS);
     let start_time = tokio::time::Instant::now();
 
@@ -639,9 +645,12 @@ pub async fn fetch_older_messages_async(
                 match signal.args() {
                     Ok(args) => {
                         if args.conversation_id == thread_id {
+                            // Capture the total message count for pagination
+                            total_message_count = Some(args.message_count);
                             tracing::info!(
-                                "Older messages loaded for thread {}, got {}",
+                                "Older messages loaded for thread {}, total {} messages, got {}",
                                 thread_id,
+                                args.message_count,
                                 messages_map.len()
                             );
                             // Drain any remaining buffered conversationUpdated signals
@@ -685,15 +694,16 @@ pub async fn fetch_older_messages_async(
     let mut messages: Vec<SmsMessage> = messages_map.into_values().collect();
     messages.sort_by(|a, b| a.date.cmp(&b.date));
 
-    // Determine if there are more messages available
-    // If we got fewer messages than requested, we've reached the beginning
-    let has_more = messages.len() >= count as usize;
+    // Determine if there are more messages available using heuristic
+    // (will be overridden by total_message_count if available)
+    let has_more_heuristic = messages.len() >= count as usize;
 
     tracing::info!(
-        "Loaded {} older messages for thread {}, has_more: {}",
+        "Loaded {} older messages for thread {}, has_more_heuristic: {}, total: {:?}",
         messages.len(),
         thread_id,
-        has_more
+        has_more_heuristic,
+        total_message_count
     );
-    Message::OlderMessagesLoaded(thread_id, messages, has_more)
+    Message::OlderMessagesLoaded(thread_id, messages, has_more_heuristic, total_message_count)
 }

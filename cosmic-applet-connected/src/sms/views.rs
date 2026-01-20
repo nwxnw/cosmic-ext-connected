@@ -1,6 +1,6 @@
 //! SMS view components for conversation list and message threads.
 
-use crate::app::Message;
+use crate::app::{LoadingPhase, Message, SmsLoadingState};
 use crate::fl;
 use crate::views::helpers::{format_timestamp, WIDE_POPUP_WIDTH};
 use cosmic::iced::widget::{column, row, text};
@@ -10,13 +10,54 @@ use cosmic::Element;
 use kdeconnect_dbus::contacts::{Contact, ContactLookup};
 use kdeconnect_dbus::plugins::{is_address_valid, ConversationSummary, MessageType, SmsMessage};
 
+// --- Helper functions for loading state ---
+
+/// Get display text for conversation loading state.
+fn conversation_loading_text(state: &SmsLoadingState) -> String {
+    match state {
+        SmsLoadingState::LoadingConversations(phase) => match phase {
+            LoadingPhase::Connecting => fl!("loading-connecting"),
+            LoadingPhase::Requesting => fl!("loading-requesting"),
+        },
+        _ => fl!("loading-conversations"),
+    }
+}
+
+/// Get display text for message loading state.
+fn message_loading_text(state: &SmsLoadingState) -> String {
+    match state {
+        SmsLoadingState::LoadingMessages(phase) => match phase {
+            LoadingPhase::Connecting => fl!("loading-connecting"),
+            LoadingPhase::Requesting => fl!("loading-requesting"),
+        },
+        _ => fl!("loading-messages"),
+    }
+}
+
+/// Check if conversations are in a loading state.
+fn is_loading_conversations(state: &SmsLoadingState) -> bool {
+    matches!(state, SmsLoadingState::LoadingConversations(_))
+}
+
+/// Check if messages are in a loading state (not pagination).
+fn is_loading_messages(state: &SmsLoadingState) -> bool {
+    matches!(state, SmsLoadingState::LoadingMessages(_))
+}
+
+/// Check if loading more messages (pagination).
+fn is_loading_more(state: &SmsLoadingState) -> bool {
+    matches!(state, SmsLoadingState::LoadingMoreMessages)
+}
+
+// --- View params and functions ---
+
 /// Parameters for the conversation list view.
 pub struct ConversationListParams<'a> {
     pub device_name: Option<&'a str>,
     pub conversations: &'a [ConversationSummary],
     pub conversations_displayed: usize,
     pub contacts: &'a ContactLookup,
-    pub sms_loading: bool,
+    pub loading_state: &'a SmsLoadingState,
 }
 
 /// Render the SMS conversation list view.
@@ -36,9 +77,12 @@ pub fn view_conversation_list(params: ConversationListParams<'_>) -> Element<'_,
     .align_y(Alignment::Center)
     .padding([8, 12]);
 
-    let content: Element<Message> = if params.sms_loading && params.conversations.is_empty() {
+    let content: Element<Message> = if is_loading_conversations(params.loading_state)
+        && params.conversations.is_empty()
+    {
         widget::container(
-            column![text(fl!("loading-conversations")).size(14),].align_x(Alignment::Center),
+            column![text(conversation_loading_text(params.loading_state)).size(14),]
+                .align_x(Alignment::Center),
         )
         .center(Length::Fill)
         .into()
@@ -127,11 +171,10 @@ pub struct MessageThreadParams<'a> {
     pub thread_addresses: Option<&'a [String]>,
     pub messages: &'a [SmsMessage],
     pub contacts: &'a ContactLookup,
-    pub sms_loading: bool,
+    pub loading_state: &'a SmsLoadingState,
     pub sms_compose_text: &'a str,
     pub sms_sending: bool,
     pub messages_has_more: bool,
-    pub messages_loading_more: bool,
 }
 
 /// Render the SMS message thread view.
@@ -154,9 +197,12 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
     .align_y(Alignment::Center)
     .padding([8, 12]);
 
-    let content: Element<Message> = if params.sms_loading && params.messages.is_empty() {
+    let content: Element<Message> = if is_loading_messages(params.loading_state)
+        && params.messages.is_empty()
+    {
         widget::container(
-            column![text(fl!("loading-messages")).size(14),].align_x(Alignment::Center),
+            column![text(message_loading_text(params.loading_state)).size(14),]
+                .align_x(Alignment::Center),
         )
         .center(Length::Fill)
         .into()
@@ -168,12 +214,13 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
         // Build message list with improved styling
         // Max width for bubbles is ~75% of popup width for better readability
         let bubble_max_width = (WIDE_POPUP_WIDTH * 0.75) as u16;
+        let loading_more = is_loading_more(params.loading_state);
 
         let mut msg_column = column![].spacing(12).padding([8, 12]);
 
         // Add "Load More" button at top if there are more messages
         if params.messages_has_more {
-            let load_more_content: Element<Message> = if params.messages_loading_more {
+            let load_more_content: Element<Message> = if loading_more {
                 row![
                     widget::icon::from_name("process-working-symbolic").size(16),
                     text(fl!("loading-older")).size(14),
@@ -198,7 +245,7 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
                     .align_x(Alignment::Center),
             )
             .class(cosmic::theme::Button::Text)
-            .on_press_maybe(if params.messages_loading_more {
+            .on_press_maybe(if loading_more {
                 None
             } else {
                 Some(Message::LoadMoreMessages)
