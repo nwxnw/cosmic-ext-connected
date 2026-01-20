@@ -1380,6 +1380,20 @@ impl Application for ConnectApplet {
                                 .map(|d| d.as_millis() as i64)
                                 .unwrap_or(0);
 
+                            // Update conversation list so it reflects the new message
+                            // when user navigates back
+                            if let Some(conv) = self
+                                .conversations
+                                .iter_mut()
+                                .find(|c| c.thread_id == thread_id)
+                            {
+                                conv.last_message = sent_body.clone();
+                                conv.timestamp = now_ms;
+                            }
+                            // Re-sort conversations by timestamp (newest first)
+                            self.conversations
+                                .sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
                             let sent_message = SmsMessage {
                                 body: sent_body,
                                 addresses: self
@@ -1513,9 +1527,12 @@ impl Application for ConnectApplet {
                         self.new_message_recipient_valid = false;
                         self.view_mode = ViewMode::ConversationList;
                         // Refresh conversations to show the new thread
+                        // Show loading state since new conversation won't be in cache
                         if let (Some(conn), Some(device_id)) =
                             (&self.dbus_connection, &self.sms_device_id)
                         {
+                            self.sms_loading_state =
+                                SmsLoadingState::LoadingConversations(LoadingPhase::Requesting);
                             return cosmic::app::Task::perform(
                                 fetch_conversations_async(conn.clone(), device_id.clone()),
                                 cosmic::Action::App,
