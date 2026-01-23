@@ -195,6 +195,10 @@ pub struct MessageThreadParams<'a> {
     pub sms_sending: bool,
     /// Whether background sync is active (syncing messages from phone)
     pub sync_active: bool,
+    /// UID of message bubble currently being pressed (for visual feedback)
+    pub pressed_bubble_uid: Option<i32>,
+    /// Whether to show the "Hold to copy" hint (500ms elapsed)
+    pub show_copy_hint: bool,
 }
 
 /// Render the SMS message thread view.
@@ -278,22 +282,56 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
             // MessageType::Inbox (1) = incoming/received, MessageType::Sent (2) = outgoing/sent
             let is_received = msg.message_type == MessageType::Inbox;
             let time_str = format_timestamp(msg.date);
+            let is_pressed = params.pressed_bubble_uid == Some(msg.uid);
+            let show_hint = is_pressed && params.show_copy_hint;
 
-            // Message bubble with appropriate styling
-            let bubble_content = column![
-                text(&msg.body).size(13).wrapping(text::Wrapping::Word),
-                text(time_str).size(9),
-            ]
-            .spacing(4);
+            // Message bubble content (long-press to copy)
+            let bubble_content =
+                column![text(&msg.body).size(13).wrapping(text::Wrapping::Word), text(time_str).size(9),]
+                    .spacing(4);
 
-            let bubble = widget::container(bubble_content)
-                .padding([8, 12])
-                .max_width(bubble_max_width)
-                .class(if is_received {
-                    cosmic::theme::Container::Card
-                } else {
-                    cosmic::theme::Container::Primary
-                });
+            // Use highlighted style when pressed for high contrast visual feedback
+            let bubble: Element<Message> = if is_pressed {
+                // Wrap in two containers for a "selected" border effect
+                let inner = widget::container(bubble_content)
+                    .padding([8, 12])
+                    .max_width(bubble_max_width - 8)
+                    .class(cosmic::theme::Container::Primary);
+                widget::container(inner)
+                    .padding(4)
+                    .class(cosmic::theme::Container::Dropdown)
+                    .into()
+            } else {
+                widget::container(bubble_content)
+                    .padding([8, 12])
+                    .max_width(bubble_max_width)
+                    .class(if is_received {
+                        cosmic::theme::Container::Card
+                    } else {
+                        cosmic::theme::Container::Primary
+                    })
+                    .into()
+            };
+
+            // Wrap bubble in mouse_area for long-press detection
+            let bubble_with_press = widget::mouse_area(bubble)
+                .on_press(Message::BubblePressStarted {
+                    uid: msg.uid,
+                    body: msg.body.clone(),
+                })
+                .on_release(Message::BubblePressReleased);
+
+            // Bubble with optional "Hold to copy" hint (only after 500ms)
+            let bubble_element: Element<Message> = if show_hint {
+                column![
+                    bubble_with_press,
+                    text(fl!("hold-to-copy")).size(10),
+                ]
+                .spacing(2)
+                .into()
+            } else {
+                bubble_with_press.into()
+            };
 
             // Received messages: show sender name above and align left
             // Sent messages: align right
@@ -301,13 +339,13 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
                 let sender_name = params.contacts.get_name_or_number(msg.primary_address());
                 column![
                     text(sender_name).size(11),
-                    row![bubble, widget::horizontal_space(),].width(Length::Fill),
+                    row![bubble_element, widget::horizontal_space(),].width(Length::Fill),
                 ]
                 .spacing(4)
                 .width(Length::Fill)
                 .into()
             } else {
-                row![widget::horizontal_space(), bubble,]
+                row![widget::horizontal_space(), bubble_element,]
                     .width(Length::Fill)
                     .into()
             };

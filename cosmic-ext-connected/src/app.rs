@@ -33,7 +33,7 @@ use crate::views::settings::view_settings;
 use cosmic::app::Core;
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::widget::{column, scrollable, text};
-use cosmic::iced::{Alignment, Subscription};
+use cosmic::iced::{clipboard, Alignment, Subscription};
 use cosmic::iced_core::layout::Limits;
 use cosmic::iced_runtime::core::window;
 use cosmic::widget;
@@ -184,6 +184,16 @@ pub enum Message {
     OlderMessagesLoaded(i64, Vec<SmsMessage>, bool, Option<u64>),
     /// Message thread scrolled - used for prefetching older messages
     MessageThreadScrolled(scrollable::Viewport),
+    /// Copy SMS message text to clipboard
+    CopyMessageText(String),
+    /// User started pressing a message bubble (for long-press copy)
+    BubblePressStarted { uid: i32, body: String },
+    /// User released press on message bubble
+    BubblePressReleased,
+    /// Hint timer completed (500ms elapsed) - show "Hold to copy" hint
+    BubbleHintTimer,
+    /// Long press timer completed (2s total elapsed) - copy to clipboard
+    BubbleLongPressComplete,
 
     // Media controls
     /// Open media controls for a device
@@ -458,6 +468,14 @@ pub struct ConnectApplet {
     // File notification deduplication
     /// Last received file URL to avoid duplicate notifications
     last_received_file: Option<String>,
+
+    // Long-press copy state
+    /// UID of message bubble currently being pressed (for long-press detection)
+    pressed_bubble_uid: Option<i32>,
+    /// Body text of message being pressed (to copy on long-press)
+    pressed_bubble_body: Option<String>,
+    /// Whether to show the "Hold to copy" hint (500ms elapsed, waiting for 2s)
+    show_copy_hint: bool,
 }
 
 impl ConnectApplet {
@@ -546,6 +564,10 @@ impl Application for ConnectApplet {
             last_seen_sms: HashMap::new(),
             // File notification deduplication
             last_received_file: None,
+            // Long-press copy state
+            pressed_bubble_uid: None,
+            pressed_bubble_body: None,
+            show_copy_hint: false,
         };
 
         // Connect to D-Bus on startup
@@ -1226,7 +1248,6 @@ impl Application for ConnectApplet {
             Message::MessagesLoaded(thread_id, msgs, total_count) => {
                 // Slow path: full sync complete from phone
                 if self.current_thread_id == Some(thread_id) {
-                    let had_messages = !self.messages.is_empty();
                     tracing::info!(
                         "Background sync complete: {} messages for thread {} (had {} cached, total: {:?})",
                         msgs.len(),
@@ -1274,9 +1295,9 @@ impl Application for ConnectApplet {
                         self.sms_loading_state = SmsLoadingState::Idle;
                     }
 
-                    // Scroll to bottom if we didn't have cached messages
-                    // (avoid jarring scroll when refreshing)
-                    if !had_messages && !self.messages.is_empty() {
+                    // Always scroll to bottom when messages are loaded/updated
+                    // to keep the newest messages visible
+                    if !self.messages.is_empty() {
                         return scrollable::snap_to(
                             widget::Id::new("message-thread"),
                             scrollable::RelativeOffset::END,
@@ -1404,6 +1425,52 @@ impl Application for ConnectApplet {
                             cosmic::Action::App,
                         );
                     }
+                }
+            }
+
+            Message::CopyMessageText(text) => {
+                return clipboard::write(text);
+            }
+
+            Message::BubblePressStarted { uid, body } => {
+                self.pressed_bubble_uid = Some(uid);
+                self.pressed_bubble_body = Some(body);
+                self.show_copy_hint = false;
+                // Spawn delayed task - fires after 500ms to show hint
+                return cosmic::app::Task::perform(
+                    async {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    },
+                    |_| cosmic::Action::App(Message::BubbleHintTimer),
+                );
+            }
+
+            Message::BubblePressReleased => {
+                // Clear pressed state - cancels the long-press action
+                self.pressed_bubble_uid = None;
+                self.pressed_bubble_body = None;
+                self.show_copy_hint = false;
+            }
+
+            Message::BubbleHintTimer => {
+                // 500ms elapsed - show "Hold to copy" hint and start 1.5s timer for actual copy
+                if self.pressed_bubble_uid.is_some() {
+                    self.show_copy_hint = true;
+                    return cosmic::app::Task::perform(
+                        async {
+                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        },
+                        |_| cosmic::Action::App(Message::BubbleLongPressComplete),
+                    );
+                }
+            }
+
+            Message::BubbleLongPressComplete => {
+                // 2s total elapsed - copy to clipboard if still pressed
+                if let Some(body) = self.pressed_bubble_body.take() {
+                    self.pressed_bubble_uid = None;
+                    self.show_copy_hint = false;
+                    return clipboard::write(body);
                 }
             }
 
@@ -2213,6 +2280,8 @@ impl Application for ConnectApplet {
                 sms_compose_text: &self.sms_compose_text,
                 sms_sending: self.sms_sending,
                 sync_active: self.message_sync_active,
+                pressed_bubble_uid: self.pressed_bubble_uid,
+                show_copy_hint: self.show_copy_hint,
             }),
             ViewMode::NewMessage => view_new_message(NewMessageParams {
                 recipient: &self.new_message_recipient,
