@@ -29,3 +29,7 @@ Thumbs.db
 
 # Local development files (not part of public distribution)
 cosmic-applet-connect/src/standalone.rs
+
+# Research notes
+docs/createSmsManager-bug-search
+docs/kde-bug-report-group-mms.md
