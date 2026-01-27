@@ -32,6 +32,10 @@ use zbus::Connection;
 /// This function returns whatever the daemon has cached without waiting for
 /// the phone to sync. It's designed for instant UI display. Use
 /// `fetch_conversations_async` afterwards for a full background sync.
+///
+/// NOTE: Currently unused as subscription-based loading handles this incrementally,
+/// but kept as a potential fallback option.
+#[allow(dead_code)]
 pub async fn fetch_cached_conversations_async(
     conn: Arc<Mutex<Connection>>,
     device_id: String,

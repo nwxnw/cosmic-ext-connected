@@ -174,6 +174,24 @@ pub fn view_conversation_list(params: ConversationListParams<'_>) -> Element<'_,
             conv_column = conv_column.push(load_more_button);
         }
 
+        // Show sync progress indicator at bottom when still syncing
+        if params.sync_active {
+            conv_column = conv_column.push(widget::divider::horizontal::default());
+            conv_column = conv_column.push(
+                widget::container(
+                    row![
+                        widget::icon::from_name("emblem-synchronizing-symbolic").size(16),
+                        text(fl!("syncing-conversations")).size(12),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .padding(12)
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+            );
+        }
+
         widget::scrollable(conv_column.padding([0, 8]))
             .width(Length::Fill)
             .into()

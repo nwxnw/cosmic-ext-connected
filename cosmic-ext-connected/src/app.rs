@@ -15,7 +15,7 @@ use crate::media::{
     MediaControlsParams,
 };
 use crate::sms::{
-    fetch_cached_conversations_async, fetch_conversations_async, fetch_messages_async,
+    conversation_list_subscription, fetch_conversations_async, fetch_messages_async,
     fetch_older_messages_async, send_new_sms_async, send_sms_async, view_conversation_list,
     view_message_thread, view_new_message, ConversationListParams, MessageThreadParams,
     NewMessageParams,
@@ -148,6 +148,9 @@ pub enum Message {
     /// Close conversation and return to conversation list
     CloseConversation,
     /// Cached conversations loaded immediately (fast initial display)
+    /// NOTE: Currently unused as subscription-based loading handles this incrementally,
+    /// but kept as a potential fallback option.
+    #[allow(dead_code)]
     ConversationsCached(Vec<ConversationSummary>),
     /// Conversations fully synced from device (background sync complete)
     ConversationsLoaded(Vec<ConversationSummary>),
@@ -251,6 +254,21 @@ pub enum Message {
     /// Fire-and-forget D-Bus request completed, start listening for signals
     ConversationLoadStarted {
         thread_id: i64,
+    },
+
+    // Subscription-based conversation list loading
+    /// Single conversation received via subscription (incremental update)
+    ConversationReceived {
+        device_id: String,
+        conversation: ConversationSummary,
+    },
+    /// Conversation list sync started (show loading indicator)
+    ConversationSyncStarted {
+        device_id: String,
+    },
+    /// Conversation list sync complete (hide loading indicator)
+    ConversationSyncComplete {
+        device_id: String,
     },
 }
 
@@ -389,6 +407,8 @@ pub struct ConnectApplet {
     conversations: Vec<ConversationSummary>,
     /// Whether background sync is active (syncing more conversations from phone)
     conversation_sync_active: bool,
+    /// Whether subscription-based conversation list loading is active
+    conversation_list_subscription_active: bool,
     /// Whether background sync is active for messages in current thread
     message_sync_active: bool,
     /// Whether subscription-based conversation loading is active
@@ -576,6 +596,7 @@ impl Application for ConnectApplet {
             sms_device_name: None,
             conversations: Vec::new(),
             conversation_sync_active: false,
+            conversation_list_subscription_active: false,
             message_sync_active: false,
             conversation_load_active: false,
             loading_thread_id: None,
@@ -1010,7 +1031,7 @@ impl Application for ConnectApplet {
 
             // SMS
             Message::OpenSmsView(device_id) => {
-                if let Some(conn) = &self.dbus_connection {
+                if self.dbus_connection.is_some() {
                     // Find device name for header
                     let device_name = self
                         .devices
@@ -1027,64 +1048,43 @@ impl Application for ConnectApplet {
                     self.sms_device_name = device_name;
 
                     if has_cache {
-                        // Use in-memory cached conversations, start background refresh
+                        // Use in-memory cached conversations, enable subscription for background refresh
                         self.sms_loading_state = SmsLoadingState::Idle; // Show cached data immediately
                         self.conversation_sync_active = true; // Show sync indicator
+                        self.conversation_list_subscription_active = true; // Enable subscription
                         tracing::info!(
-                            "Using cached {} conversations for device: {}, starting background sync",
+                            "Using cached {} conversations for device: {}, starting subscription-based sync",
                             self.conversations.len(),
                             device_id
                         );
-                        // Background sync to get any new conversations
-                        return cosmic::app::Task::perform(
-                            fetch_conversations_async(conn.clone(), device_id),
-                            cosmic::Action::App,
-                        );
+                        // Subscription will handle background sync
                     } else {
-                        // No cache or different device - two-phase loading:
-                        // 1. Immediately fetch daemon's cached conversations (fast)
-                        // 2. Start background sync with phone (slower)
+                        // No cache or different device - subscription-based loading
+                        // Conversations will arrive incrementally via signals
                         self.sms_loading_state =
                             SmsLoadingState::LoadingConversations(LoadingPhase::Connecting);
                         self.conversation_sync_active = true;
+                        self.conversation_list_subscription_active = true; // Enable subscription
                         self.conversations.clear();
                         self.conversations_displayed = 10;
                         self.message_cache.clear();
                         self.contacts = ContactLookup::default(); // Will be loaded async
                         tracing::info!(
-                            "Opening SMS view for device: {} (two-phase loading)",
+                            "Opening SMS view for device: {} (subscription-based loading)",
                             device_id
                         );
 
-                        // Three parallel tasks:
-                        // 1. Fast cached fetch (returns ConversationsCached for immediate display)
-                        // 2. Full sync (returns ConversationsLoaded when complete)
-                        // 3. Contact loading
-                        let device_id_for_sync = device_id.clone();
+                        // Load contacts in parallel - subscription handles conversation loading
                         let device_id_for_contacts = device_id.clone();
-                        let conn_for_sync = conn.clone();
-                        return cosmic::app::Task::batch(vec![
-                            // Fast: get daemon's cached conversations immediately
-                            cosmic::app::Task::perform(
-                                fetch_cached_conversations_async(conn.clone(), device_id),
-                                cosmic::Action::App,
-                            ),
-                            // Slow: full sync with phone in background
-                            cosmic::app::Task::perform(
-                                fetch_conversations_async(conn_for_sync, device_id_for_sync),
-                                cosmic::Action::App,
-                            ),
-                            // Parallel: load contacts
-                            cosmic::app::Task::perform(
-                                async move {
-                                    let contacts =
-                                        ContactLookup::load_for_device(&device_id_for_contacts)
-                                            .await;
-                                    Message::ContactsLoaded(device_id_for_contacts, contacts)
-                                },
-                                cosmic::Action::App,
-                            ),
-                        ]);
+                        return cosmic::app::Task::perform(
+                            async move {
+                                let contacts =
+                                    ContactLookup::load_for_device(&device_id_for_contacts)
+                                        .await;
+                                Message::ContactsLoaded(device_id_for_contacts, contacts)
+                            },
+                            cosmic::Action::App,
+                        );
                     }
                 }
             }
@@ -1098,6 +1098,7 @@ impl Application for ConnectApplet {
                 self.current_thread_sub_id = None;
                 self.sms_loading_state = SmsLoadingState::Idle;
                 self.conversation_sync_active = false;
+                self.conversation_list_subscription_active = false;
                 self.sms_compose_text.clear();
                 self.sms_sending = false;
             }
@@ -1245,7 +1246,7 @@ impl Application for ConnectApplet {
                 }
             }
             Message::ConversationsLoaded(convs) => {
-                // Slow path: full sync complete from phone
+                // Slow path: full sync complete from phone (legacy batch loading)
                 tracing::info!(
                     "Background sync complete: {} conversations (had {} cached)",
                     convs.len(),
@@ -1276,6 +1277,98 @@ impl Application for ConnectApplet {
                     self.sms_loading_state = SmsLoadingState::Idle;
                 }
             }
+
+            // Subscription-based conversation list loading handlers
+            Message::ConversationReceived { device_id, conversation } => {
+                // Guard: Only process if for current device
+                if self.sms_device_id.as_ref() != Some(&device_id) {
+                    tracing::debug!(
+                        "Ignoring conversation for device {} (current: {:?})",
+                        device_id,
+                        self.sms_device_id
+                    );
+                    return cosmic::app::Task::none();
+                }
+
+                // Update or insert conversation by thread_id
+                if let Some(existing) = self
+                    .conversations
+                    .iter_mut()
+                    .find(|c| c.thread_id == conversation.thread_id)
+                {
+                    // Only update if the new conversation has a newer timestamp
+                    if conversation.timestamp > existing.timestamp {
+                        *existing = conversation.clone();
+                        tracing::debug!(
+                            "Updated conversation thread {} (newer timestamp)",
+                            conversation.thread_id
+                        );
+                    }
+                } else {
+                    // Insert new conversation
+                    self.conversations.push(conversation.clone());
+                    tracing::debug!("Added new conversation thread {}", conversation.thread_id);
+                }
+
+                // Re-sort by timestamp (newest first) and truncate
+                self.conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+                self.conversations.truncate(kdeconnect_dbus::plugins::MAX_CONVERSATIONS);
+
+                // Update last_seen for notification deduplication
+                let current = self.last_seen_sms.get(&conversation.thread_id).copied();
+                if current.is_none() || current < Some(conversation.timestamp) {
+                    self.last_seen_sms.insert(conversation.thread_id, conversation.timestamp);
+                }
+
+                // Transition from loading spinner to showing data (but keep sync indicator)
+                if matches!(
+                    self.sms_loading_state,
+                    SmsLoadingState::LoadingConversations(_)
+                ) {
+                    self.sms_loading_state = SmsLoadingState::Idle;
+                }
+            }
+            Message::ConversationSyncStarted { device_id } => {
+                // Guard: Only process if for current device
+                if self.sms_device_id.as_ref() != Some(&device_id) {
+                    return cosmic::app::Task::none();
+                }
+
+                tracing::debug!("Conversation sync started for device {}", device_id);
+                // Update loading phase to indicate we're waiting for signals
+                if matches!(
+                    self.sms_loading_state,
+                    SmsLoadingState::LoadingConversations(LoadingPhase::Connecting)
+                ) {
+                    self.sms_loading_state =
+                        SmsLoadingState::LoadingConversations(LoadingPhase::Requesting);
+                }
+            }
+            Message::ConversationSyncComplete { device_id } => {
+                // Guard: Only process if for current device
+                if self.sms_device_id.as_ref() != Some(&device_id) {
+                    return cosmic::app::Task::none();
+                }
+
+                tracing::info!(
+                    "Conversation sync complete for device {}, loaded {} conversations",
+                    device_id,
+                    self.conversations.len()
+                );
+
+                // Clear sync indicators
+                self.conversation_sync_active = false;
+                self.conversation_list_subscription_active = false;
+
+                // Reset loading state if still loading
+                if matches!(
+                    self.sms_loading_state,
+                    SmsLoadingState::LoadingConversations(_)
+                ) {
+                    self.sms_loading_state = SmsLoadingState::Idle;
+                }
+            }
+
             Message::ContactsLoaded(device_id, contacts) => {
                 // Only update if contacts are for the current SMS device
                 if self.sms_device_id.as_ref() == Some(&device_id) {
@@ -2431,6 +2524,17 @@ impl Application for ConnectApplet {
             && self.devices.iter().any(|d| d.is_reachable && d.is_paired)
         {
             subscriptions.push(Subscription::run(call_notification_subscription));
+        }
+
+        // Add conversation list subscription for incremental loading
+        // This provides real-time UI updates as conversations arrive from the phone
+        if self.conversation_list_subscription_active {
+            if let Some(device_id) = self.sms_device_id.clone() {
+                subscriptions.push(Subscription::run_with_id(
+                    ("conversation_list", device_id.clone()),
+                    conversation_list_subscription(device_id),
+                ));
+            }
         }
 
         // Add conversation message subscription when loading a conversation
