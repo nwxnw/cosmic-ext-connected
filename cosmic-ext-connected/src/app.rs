@@ -178,6 +178,15 @@ pub enum Message {
     SmsError(String),
     /// Update SMS compose text input
     SmsComposeAction(cosmic::widget::text_editor::Action),
+    /// Open the file picker to stage an attachment for the open thread.
+    AttachToSms,
+    AttachToNewMessage,
+    /// Result of the picker; `None` means cancelled or unusable.
+    SmsAttachmentSelected(Option<std::path::PathBuf>),
+    NewMessageAttachmentSelected(Option<std::path::PathBuf>),
+    /// Remove the staged attachment before sending.
+    ClearSmsAttachment,
+    ClearNewMessageAttachment,
     /// Send SMS in current thread
     SendSms,
     /// SMS send operation completed
@@ -601,6 +610,22 @@ impl ConnectApplet {
             crate::sms::SmsReply::NoOp => cosmic::app::Task::none(),
         }
     }
+
+    fn pick_attachment(
+        to_message: fn(Option<std::path::PathBuf>) -> Message,
+    ) -> cosmic::app::Task<Message> {
+        cosmic::task::future(async move {
+            use cosmic::dialog::file_chooser;
+            let result = file_chooser::open::Dialog::new()
+                .title(fl!("attach-file"))
+                .open_file()
+                .await;
+            match result {
+                Ok(response) => to_message(response.url().to_file_path().ok()),
+                Err(_) => to_message(None),
+            }
+        })
+    }
 }
 
 impl Application for ConnectApplet {
@@ -941,6 +966,12 @@ impl Application for ConnectApplet {
                     ));
                 }
             },
+
+            // Pick file to attach to SMS message
+            Message::AttachToSms => return Self::pick_attachment(Message::SmsAttachmentSelected),
+            Message::AttachToNewMessage => {
+                return Self::pick_attachment(Message::NewMessageAttachmentSelected)
+            }
 
             // Share
             Message::ShareFile(device_id) => {
@@ -1383,6 +1414,7 @@ impl Application for ConnectApplet {
                 self.sms.new_message_sync_active = false;
                 self.sms.conversation_list_subscription_active = false;
                 self.sms.sms_compose_text = widget::text_editor::Content::new();
+                self.sms.pending_attachment = None;
                 self.sms.sms_sending = false;
                 self.sms.sms_sending_body = None;
             }
@@ -1460,6 +1492,7 @@ impl Application for ConnectApplet {
                 self.sms.thread_has_more.clear();
                 self.sms.messages.clear();
                 self.sms.sms_compose_text = widget::text_editor::Content::new();
+                self.sms.pending_attachment = None;
                 self.sms.sms_sending = false;
                 self.sms.sms_sending_body = None;
                 self.sms.message_sync_active = false;
@@ -1515,6 +1548,7 @@ impl Application for ConnectApplet {
                 self.sms.new_message_recipients.clear();
                 self.sms.new_message_recipient_input.clear();
                 self.sms.new_message_body = widget::text_editor::Content::new();
+                self.sms.new_message_pending_attachment = None;
                 self.sms.new_message_sending = false;
                 self.sms.contact_suggestions.clear();
                 return widget::text_input::focus(widget::Id::new("new-message-recipient"));
@@ -1524,6 +1558,7 @@ impl Application for ConnectApplet {
                 self.sms.new_message_recipients.clear();
                 self.sms.new_message_recipient_input.clear();
                 self.sms.new_message_body = widget::text_editor::Content::new();
+                self.sms.new_message_pending_attachment = None;
                 self.sms.new_message_sending = false;
             }
 
@@ -1852,6 +1887,8 @@ impl Application for ConnectApplet {
             | Message::SmsComposeAction(_)
             | Message::SendSms
             | Message::SmsSendResult(_)
+            | Message::SmsAttachmentSelected(_)
+            | Message::ClearSmsAttachment
             | Message::NewMessageRecipientInput(_)
             | Message::NewMessageBodyAction(_)
             | Message::AddManualRecipient
@@ -1859,6 +1896,8 @@ impl Application for ConnectApplet {
             | Message::SelectContact(_, _)
             | Message::SendNewMessage
             | Message::NewMessageSendResult(_)
+            | Message::NewMessageAttachmentSelected(_)
+            | Message::ClearNewMessageAttachment
             | Message::OpenAttachment { .. }
             | Message::AttachmentReady(_)
             | Message::AttachmentError(_)

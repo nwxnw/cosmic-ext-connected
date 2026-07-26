@@ -381,6 +381,8 @@ pub struct MessageThreadParams<'a> {
     pub show_copy_hint: bool,
     /// Status message to display (e.g. send confirmation or error)
     pub status_message: Option<&'a str>,
+    /// File staged for the next send, if any
+    pub pending_attachment: Option<&'a std::path::Path>,
 }
 
 /// Enter sends; Shift+Enter falls through to default newline binding
@@ -614,7 +616,9 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
             .leading_icon(widget::icon::from_name("process-working-symbolic").size(16))
             .into()
     } else {
-        let can_send = !params.sms_compose_text.text().trim().is_empty() && !params.sms_sending;
+        let can_send = (!params.sms_compose_text.text().trim().is_empty()
+            || params.pending_attachment.is_some())
+            && !params.sms_sending;
         widget::button::suggested(fl!("send"))
             .leading_icon(widget::icon::from_name("mail-send-symbolic").size(16))
             .on_press_maybe(if can_send {
@@ -625,11 +629,52 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
             .into()
     };
 
-    let compose_row = applet::padded_control(
-        row![compose_input, send_btn,]
+    let attach_btn = widget::tooltip(
+        widget::button::icon(widget::icon::from_name("mail-attachment-symbolic").size(16))
+            .on_press_maybe(if params.sms_sending {
+                None
+            } else {
+                Some(Message::AttachToSms)
+            }),
+        text::caption(fl!("attach-file")),
+        widget::tooltip::Position::Top,
+    )
+    .gap(sp.space_xxxs)
+    .padding(sp.space_xxs);
+
+    let attachment_chip: Option<Element<Message>> = params.pending_attachment.map(|p| {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        row![
+            widget::icon::from_name("mail-attachment-symbolic").size(14),
+            text::caption(name),
+            widget::tooltip(
+                widget::button::icon(widget::icon::from_name("edit-clear-symbolic").size(14))
+                    .on_press(Message::ClearSmsAttachment),
+                text::caption(fl!("remove-attachment")),
+                widget::tooltip::Position::Top
+            )
+            .gap(sp.space_xxxs)
+            .padding(sp.space_xxs),
+        ]
+        .spacing(sp.space_xxs)
+        .align_y(Alignment::Center)
+        .into()
+    });
+
+    let mut compose_content = column![].spacing(sp.space_xxs);
+    if let Some(chip) = attachment_chip {
+        compose_content = compose_content.push(chip);
+    }
+    compose_content = compose_content.push(
+        row![compose_input, attach_btn, send_btn]
             .spacing(sp.space_xxs)
             .align_y(Alignment::Center),
     );
+
+    let compose_row = applet::padded_control(compose_content);
 
     let mut thread_column = column![header, content, compose_row,]
         .spacing(sp.space_xxxs)
@@ -658,6 +703,7 @@ pub struct NewMessageParams<'a> {
     pub sending: bool,
     /// Contact suggestions as (contact_name, phone_number) tuples
     pub contact_suggestions: &'a [(String, String)],
+    pub pending_attachment: Option<&'a std::path::Path>,
 }
 
 /// Render the new message compose view.
@@ -796,9 +842,10 @@ pub fn view_new_message(params: NewMessageParams<'_>) -> Element<'_, Message> {
         .padding(sp.space_xs)
         .max_height(120.0);
 
-    // Send button — enabled when at least one recipient and body is non-empty
-    let send_enabled =
-        !params.recipients.is_empty() && !params.body.text().trim().is_empty() && !params.sending;
+    // Send button — enabled when at least one recipient and body or attachment is non-empty
+    let send_enabled = !params.recipients.is_empty()
+        && (!params.body.text().trim().is_empty() || params.pending_attachment.is_some())
+        && !params.sending;
 
     let send_btn = if params.sending {
         widget::button::standard(fl!("sending"))
@@ -811,19 +858,56 @@ pub fn view_new_message(params: NewMessageParams<'_>) -> Element<'_, Message> {
                 None
             })
     };
+    let attach_btn = widget::tooltip(
+        widget::button::icon(widget::icon::from_name("mail-attachment-symbolic").size(16))
+            .on_press_maybe(if params.sending {
+                None
+            } else {
+                Some(Message::AttachToNewMessage)
+            }),
+        text::caption(fl!("attach-file")),
+        widget::tooltip::Position::Top,
+    )
+    .gap(sp.space_xxxs)
+    .padding(sp.space_xxs);
+    let attachment_chip: Option<Element<Message>> = params.pending_attachment.map(|p| {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        row![
+            widget::icon::from_name("mail-attachment-symbolic").size(14),
+            text::caption(name),
+            widget::tooltip(
+                widget::button::icon(widget::icon::from_name("edit-clear-symbolic").size(14))
+                    .on_press(Message::ClearNewMessageAttachment),
+                text::caption(fl!("remove-attachment")),
+                widget::tooltip::Position::Top,
+            )
+            .gap(sp.space_xxxs)
+            .padding(sp.space_xxs),
+        ]
+        .spacing(sp.space_xxs)
+        .align_y(Alignment::Center)
+        .into()
+    });
 
-    let send_row = applet::padded_control(
-        row![widget::space::horizontal(), send_btn,]
+    let mut compose_content = column![].spacing(sp.space_xxs);
+    if let Some(chip) = attachment_chip {
+        compose_content = compose_content.push(chip);
+    }
+    compose_content = compose_content.push(
+        row![message_input, attach_btn, send_btn]
             .spacing(sp.space_xxs)
             .align_y(Alignment::Center),
     );
+    let send_row = applet::padded_control(compose_content);
 
     column![
         header,
         recipient_row,
         chips_section,
         suggestions_section,
-        applet::padded_control(message_input),
         send_row,
         widget::space::vertical(),
     ]

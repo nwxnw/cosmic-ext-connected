@@ -31,6 +31,9 @@ pub mod dbus {
 
 /// SMS conversation and message loading constants.
 pub mod sms {
+    /// Above this, warn the user that carriers commonly reject larger MMS.
+    pub const ATTACHMENT_SOFT_WARN_BYTES: u64 = 1_000_000;
+
     /// Maximum number of logical conversations kept in the derived list for display.
     pub const CONVERSATION_LIST_DISPLAY_LIMIT: usize = 40;
     /// Max height (logical px) of the conversation-list scroll area
