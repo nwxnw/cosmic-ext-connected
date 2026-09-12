@@ -2,6 +2,7 @@
 Name=Connected
 Comment=Phone connectivity via KDE Connect
 Comment[cs]=Propojení telefonu přes KDE Connect
+Comment[pl]=Połączenie z telefonem przez KDE Connect
 Comment[sv]=Telefonanslutning via KDE Connect
 Type=Application
 Exec=cosmic-ext-connected
