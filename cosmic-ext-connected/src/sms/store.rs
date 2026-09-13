@@ -72,12 +72,8 @@ pub(crate) struct OlderPageLoad {
     pending: HashSet<i64>,
     /// Requested page size (== MESSAGES_PER_PAGE).
     page_size: u32,
-    /// `messages.len()` captured before the request, for prepend-height math.
+    /// `messages.len()` captured before the request, for prepended count.
     len_before: usize,
-    /// Scroll offset captured before the request (position preservation).
-    scroll_offset: f32,
-    /// Content height captured before the request.
-    content_height: f32,
     /// Which detector settled each thread. Capture-log only. Recorded when it
     /// happens because `served` keeps counting after a thread settles, so this
     /// cannot be re-derived at finalize time.
@@ -229,22 +225,6 @@ impl SmsConversationStore {
             self.messages.len(),
             self.messages_has_more
         );
-
-        // Preserve scroll position for the prepended content.
-        if prepended > 0 {
-            const ESTIMATED_MSG_HEIGHT: f32 = 70.0;
-            let prepended_height = prepended as f32 * ESTIMATED_MSG_HEIGHT;
-            let new_content_height = load.content_height + prepended_height;
-            let new_offset = load.scroll_offset + prepended_height;
-            let relative_y = (new_offset / new_content_height).clamp(0.0, 1.0);
-            return scrollable::snap_to(
-                widget::Id::new("message-thread"),
-                scrollable::RelativeOffset {
-                    x: Some(0.0),
-                    y: Some(relative_y),
-                },
-            );
-        }
         cosmic::app::Task::none()
     }
 
@@ -663,7 +643,7 @@ impl SmsConversationStore {
                 // Trigger when within 100 pixels of the top and not already loading
                 const PREFETCH_THRESHOLD_PX: f32 = 100.0;
 
-                let scroll_offset = viewport.absolute_offset().y;
+                let scroll_offset = viewport.absolute_offset_reversed().y;
                 let content_height = viewport.content_bounds().height;
 
                 if scroll_offset < PREFETCH_THRESHOLD_PX
@@ -697,8 +677,6 @@ impl SmsConversationStore {
                             pending: targets.iter().copied().collect(),
                             page_size: MESSAGES_PER_PAGE,
                             len_before: self.messages.len(),
-                            scroll_offset,
-                            content_height,
                             settled_by: HashMap::new(),
                         });
 
@@ -897,7 +875,7 @@ impl SmsConversationStore {
                     return (
                         scrollable::snap_to(
                             widget::Id::new("message-thread"),
-                            scrollable::RelativeOffset::END.into(),
+                            scrollable::RelativeOffset::START.into(),
                         ),
                         SmsReply::NoOp,
                     );
@@ -917,7 +895,7 @@ impl SmsConversationStore {
                     return (
                         scrollable::snap_to(
                             widget::Id::new("message-thread"),
-                            scrollable::RelativeOffset::END.into(),
+                            scrollable::RelativeOffset::START.into(),
                         ),
                         SmsReply::NoOp,
                     );
@@ -992,7 +970,7 @@ impl SmsConversationStore {
                     return (
                         scrollable::snap_to(
                             widget::Id::new("message-thread"),
-                            scrollable::RelativeOffset::END.into(),
+                            scrollable::RelativeOffset::START.into(),
                         ),
                         SmsReply::NoOp,
                     );
@@ -1078,7 +1056,7 @@ impl SmsConversationStore {
                     return (
                         scrollable::snap_to(
                             widget::Id::new("message-thread"),
-                            scrollable::RelativeOffset::END.into(),
+                            scrollable::RelativeOffset::START.into(),
                         ),
                         SmsReply::NoOp,
                     );
@@ -1220,7 +1198,7 @@ impl SmsConversationStore {
                                 return (
                                     scrollable::snap_to(
                                         widget::Id::new("message-thread"),
-                                        scrollable::RelativeOffset::END.into(),
+                                        scrollable::RelativeOffset::START.into(),
                                     ),
                                     SmsReply::NoOp,
                                 );

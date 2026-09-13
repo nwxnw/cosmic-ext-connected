@@ -125,10 +125,20 @@ Two consequences:
 
 So a scroll-position bug between two views is fixed by resetting the *donor's* offset, not the
 recipient's. That is why `Message::CloseConversation` snaps the **message thread's** scrollable to
-`START` on the way out: thread-open pins that scrollable to `END`, the conversation list is about
-to adopt the state, and targeting the list's own id cannot work. Verify against
+`START` on the way out: the thread is anchored to the bottom, so its offset is measured from the
+newest message and is non-zero whenever the user scrolled up; the top-anchored conversation list
+is about to adopt that state and would read the same number as a distance from its top, and
+targeting the list's own id cannot work. Verify against
 `vendor/iced_core/src/widget/tree.rs` and `vendor/iced_widget/src/scrollable.rs`, **not**
 `~/.cargo` (which holds unrelated revs).
+
+**The message thread scrollable is `anchor_bottom()`.** A fresh widget tree starts at offset 0,
+and under `Anchor::End` that is the newest message, so the thread lands on the newest message
+after any rebuild (popup close and reopen destroys the tree) without a `snap_to` and without any
+dependency on when the popup's tree exists. The anchor inverts the offset frame for that widget:
+`RelativeOffset::START` is the bottom and `END` is the top, `Viewport::absolute_offset()` measures
+from the bottom (use `absolute_offset_reversed()` for distance from the top), and content
+prepended at the top does not move the view, so older-page loads need no position fix-up.
 
 ## Clickable List Item Pattern
 

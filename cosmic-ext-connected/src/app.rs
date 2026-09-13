@@ -1481,11 +1481,15 @@ impl Application for ConnectApplet {
                 // (a scrollable reports Internal::Set from Widget::id(), which no
                 // name-matching path in libcosmic accepts), so the conversation list
                 // lands on the slot the message thread just vacated and inherits its
-                // offset - which thread-open pinned to END, i.e., the oldest
-                // conversation. The same positional match overwrites the list
-                // scrollable's own id, so "message-thread" is the id it answers to
-                // here. If that alignment ever changes, the list gets fresh state
-                // (offset 0, newest first) and this becomes a harmless no-op
+                // offset. The thread is anchored to the bottom, so that offset is
+                // measured from the newest message and is non-zero whenever the
+                // user scrolled up; the top-anchored list would read the same
+                // number as a distance from its top. START (relative 0) is the
+                // top for the list regardless of the thread's anchor. The same
+                // positional match overwrites the list scrollable's own id, so
+                // "message-thread" is the id it answers to here. If that tree
+                // alignment ever changes, the list gets fresh state (offset 0,
+                // newest first) and this becomes a harmless no-op
                 return scrollable::snap_to(
                     widget::Id::new("message-thread"),
                     scrollable::RelativeOffset::START.into(),

@@ -592,6 +592,7 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
         }
 
         widget::scrollable(msg_column)
+            .anchor_bottom()
             .id(widget::Id::new("message-thread"))
             .width(Length::Fill)
             .height(Length::Fill)
