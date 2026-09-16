@@ -664,9 +664,7 @@ impl Application for ConnectApplet {
                         None,
                     )
                 };
-                return cosmic::task::message(cosmic::Action::Cosmic(
-                    cosmic::app::Action::Surface(action),
-                ));
+                return cosmic::task::message(cosmic::Action::Surface(action));
             }
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
