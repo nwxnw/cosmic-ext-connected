@@ -9,10 +9,9 @@
   "command": "cosmic-ext-connected.sh",
   "finish-args": [
     "--socket=wayland",
-    "--socket=session-bus",
+    "--talk-name=org.kde.kdeconnect",
     "--share=ipc",
     "--device=dri",
-    "--talk-name=com.system76.CosmicSettingsDaemon",
     "--talk-name=org.freedesktop.Notifications",
     "--filesystem=xdg-config/cosmic:rw",
     "--filesystem=xdg-data/kpeoplevcard:ro",

@@ -1,6 +1,8 @@
 # Changelog
 
 ## [0.9.0] - Unreleased
+### Changed
+- The Flatpak sandbox no longer has unrestricted access to the session bus. It now talks only to KDE Connect and the notification service.
 
 ## [0.8.0] - 2026-08-30
 Connected's popup now blurs like the rest of COSMIC, and it starts KDE Connect for you instead of failing with a cryptic error, so first run works the same on Fedora, Arch and Debian as it does on Pop!_OS.

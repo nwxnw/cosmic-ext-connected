@@ -52,12 +52,13 @@ just uninstall                           # Uninstall
 **Flatpak build:**
 ```bash
 flatpak-builder --user --install --force-clean build-dir io.github.nwxnw.cosmic-ext-connected.json
-gtk-update-icon-cache -f ~/.local/share/flatpak/exports/share/icons/hicolor/  # Force icon cache refresh
 killall cosmic-panel                     # Reload panel
 ```
 
 **Flatpak sandbox permissions** (in `finish-args` of manifest):
-- `--filesystem=xdg-config/cosmic:rw` — read/write COSMIC config
+- `--talk-name=org.kde.kdeconnect` - the daemon's activatable bus name; a talk grant also lets the bus start it on demand. There is no `--socket=session-bus`, so every D-Bus peer needs its own entry (portals and `org.freedesktop.DBus` are implicit)
+- `--talk-name=org.freedesktop.Notifications` - desktop notifications via `notify-rust`
+- `--filesystem=xdg-config/cosmic:rw` - read/write COSMIC config (file-based; `dbus-config` is not compiled in, so `com.system76.CosmicSettingsDaemon` is not needed)
 - `--filesystem=xdg-data/kpeoplevcard:ro` — read contacts for SMS name resolution
 - `--filesystem=xdg-cache/kdeconnect.daemon:ro` — read MMS attachment cache (daemon uses Qt app name `"kdeconnect.daemon"` → cache at `~/.cache/kdeconnect.daemon/`)
 
