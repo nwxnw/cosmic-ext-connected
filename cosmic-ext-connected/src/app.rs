@@ -611,6 +611,17 @@ impl ConnectApplet {
         }
     }
 
+    /// Route a message to the SMS store and apply whatever reply it returns
+    fn delegate_to_sms(&mut self, message: Message) -> cosmic::app::Task<Message> {
+        let ctx = crate::sms::SmsCtx {
+            conn: self.dbus_connection.as_ref(),
+            config: &self.config,
+        };
+        let (sms_task, reply) = self.sms.update(message, &ctx);
+        let reply_task = self.handle_sms_reply(reply);
+        cosmic::app::Task::batch([sms_task, reply_task])
+    }
+
     fn pick_attachment(
         to_message: fn(Option<std::path::PathBuf>) -> Message,
     ) -> cosmic::app::Task<Message> {
@@ -621,7 +632,13 @@ impl ConnectApplet {
                 .open_file()
                 .await;
             match result {
-                Ok(response) => to_message(response.url().to_file_path().ok()),
+                Ok(response) => to_message(
+                    response
+                        .0
+                        .uris()
+                        .first()
+                        .and_then(|u| u.to_file_path().ok()),
+                ),
                 Err(_) => to_message(None),
             }
         })
@@ -971,6 +988,19 @@ impl Application for ConnectApplet {
             Message::AttachToSms => return Self::pick_attachment(Message::SmsAttachmentSelected),
             Message::AttachToNewMessage => {
                 return Self::pick_attachment(Message::NewMessageAttachmentSelected)
+            }
+
+            // The portal dialog takes focus and the panel tears the popup
+            // down. Bring it back on every path, cancel included, unless
+            // the panel left it standing.
+            Message::SmsAttachmentSelected(_) | Message::NewMessageAttachmentSelected(_) => {
+                let reopen = if self.popup.is_none() {
+                    Self::open_popup_task()
+                } else {
+                    cosmic::app::Task::none()
+                };
+                let staged = self.delegate_to_sms(message);
+                return cosmic::app::Task::batch([reopen, staged]);
             }
 
             // Share
@@ -1887,7 +1917,6 @@ impl Application for ConnectApplet {
             | Message::SmsComposeAction(_)
             | Message::SendSms
             | Message::SmsSendResult(_)
-            | Message::SmsAttachmentSelected(_)
             | Message::ClearSmsAttachment
             | Message::NewMessageRecipientInput(_)
             | Message::NewMessageBodyAction(_)
@@ -1896,20 +1925,11 @@ impl Application for ConnectApplet {
             | Message::SelectContact(_, _)
             | Message::SendNewMessage
             | Message::NewMessageSendResult(_)
-            | Message::NewMessageAttachmentSelected(_)
             | Message::ClearNewMessageAttachment
             | Message::OpenAttachment { .. }
             | Message::AttachmentReady(_)
             | Message::AttachmentError(_)
-            | Message::SmsNotificationReceived(_, _) => {
-                let ctx = crate::sms::SmsCtx {
-                    conn: self.dbus_connection.as_ref(),
-                    config: &self.config,
-                };
-                let (sms_task, reply) = self.sms.update(message, &ctx);
-                let reply_task = self.handle_sms_reply(reply);
-                return cosmic::app::Task::batch([sms_task, reply_task]);
-            }
+            | Message::SmsNotificationReceived(_, _) => return self.delegate_to_sms(message),
         }
 
         cosmic::app::Task::none()
