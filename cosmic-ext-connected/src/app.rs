@@ -552,6 +552,27 @@ impl ConnectApplet {
         })
     }
 
+    /// The popup-create half of `TogglePopup`, extracted so any other caller
+    /// issues the identical request rather than a hand-rolled copy.
+    fn open_popup_task() -> cosmic::app::Task<Message> {
+        let action = app_popup::<ConnectApplet>(
+            |_| Default::default(),
+            |state: &mut ConnectApplet| {
+                let new_id = window::Id::unique();
+                state.popup = Some(new_id);
+                state.core.applet.get_popup_settings(
+                    state.core.main_window_id().unwrap(),
+                    new_id,
+                    None,
+                    None,
+                    None,
+                )
+            },
+            None,
+        );
+        cosmic::task::message(cosmic::Action::Surface(action))
+    }
+
     /// Set a transient status message that auto-clears after 3 seconds.
     fn set_transient_status(&mut self, msg: String) -> cosmic::app::Task<Message> {
         self.status_message = Some(msg);
@@ -645,26 +666,10 @@ impl Application for ConnectApplet {
     fn update(&mut self, message: Self::Message) -> cosmic::app::Task<Self::Message> {
         match message {
             Message::TogglePopup => {
-                let action = if let Some(popup_id) = self.popup.take() {
-                    destroy_popup(popup_id)
-                } else {
-                    app_popup::<ConnectApplet>(
-                        |_| Default::default(),
-                        |state: &mut ConnectApplet| {
-                            let new_id = window::Id::unique();
-                            state.popup = Some(new_id);
-                            state.core.applet.get_popup_settings(
-                                state.core.main_window_id().unwrap(),
-                                new_id,
-                                None,
-                                None,
-                                None,
-                            )
-                        },
-                        None,
-                    )
-                };
-                return cosmic::task::message(cosmic::Action::Surface(action));
+                if let Some(popup_id) = self.popup.take() {
+                    return cosmic::task::message(cosmic::Action::Surface(destroy_popup(popup_id)));
+                }
+                return Self::open_popup_task();
             }
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
