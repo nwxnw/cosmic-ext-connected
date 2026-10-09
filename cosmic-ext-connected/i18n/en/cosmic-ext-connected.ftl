@@ -189,7 +189,8 @@ loading-attachment = Loading attachment...
 attachment-failed = Failed to load attachment
 attach-file = Attach file
 remove-attachment = Remove attachment
-attachment-unreadable = File is unreadable - nothing was sent
+attachment-unreadable = File is unreadable - not attached
+attachment-missing = Attachment is no longer readable - nothing was sent
 attachment-too-large = Large attachments may be rejected by your carrier
 
 # Reaction-thread merging UI

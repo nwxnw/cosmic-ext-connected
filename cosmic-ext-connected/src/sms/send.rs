@@ -1,6 +1,7 @@
 //! SMS sending functionality.
 
 use crate::app::Message;
+use crate::fl;
 use kdeconnect_dbus::plugins::ConversationsProxy;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -10,14 +11,10 @@ use zbus::Connection;
 /// Convert a picked file path into the daemon's expected `attachmentUrls` element
 fn attachment_value(path: &std::path::Path) -> Result<Value<'static>, String> {
     if !path.is_file() {
-        return Err(format!(
-            "attachment is not a readable file: {}",
-            path.display()
-        ));
+        tracing::warn!("attachment vanished before send: {}", path.display());
+        return Err(fl!("attachment-missing"));
     }
-    let s = path
-        .to_str()
-        .ok_or_else(|| "Attachment path is not valid UTF-8".to_string())?;
+    let s = path.to_str().ok_or_else(|| fl!("attachment-missing"))?;
     Ok(Value::from(s.to_owned()))
 }
 
