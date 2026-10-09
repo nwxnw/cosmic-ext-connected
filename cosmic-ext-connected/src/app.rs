@@ -952,7 +952,13 @@ impl Application for ConnectApplet {
                         .open_file()
                         .await;
                     match result {
-                        Ok(response) => Message::FileSelected(response.url().to_file_path().ok()),
+                        Ok(response) => Message::FileSelected(
+                            response
+                                .0
+                                .uris()
+                                .first()
+                                .and_then(|u| u.to_file_path().ok()),
+                        ),
                         Err(_) => Message::FileSelected(None),
                     }
                 });
