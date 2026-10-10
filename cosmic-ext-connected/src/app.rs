@@ -47,6 +47,8 @@ pub enum Message {
     TogglePopup,
     /// Popup was closed
     PopupClosed(window::Id),
+    /// (output name, logical height) from a Wayland output event
+    OutputHeight(String, f32),
     /// Refresh device list
     RefreshDevices,
     /// Prod the daemon to re-scan the network, then refresh (manual Refresh button)
@@ -547,6 +549,9 @@ pub struct ConnectApplet {
     // File notification deduplication
     /// Last received file URL to avoid duplicate notifications
     last_received_file: Option<String>,
+
+    /// Logical height of the panel's output, `None` until the first Wayland output event
+    output_height: Option<f32>,
 }
 
 impl ConnectApplet {
@@ -580,6 +585,24 @@ impl ConnectApplet {
             None,
         );
         cosmic::task::message(cosmic::Action::Surface(action))
+    }
+
+    /// Tallest the popup can be on this output. libcosmic's cap until the output
+    /// height is known, or when not launched by the panel.
+    fn popup_max_height(&self) -> f32 {
+        use crate::constants::popup::{MAX_HEIGHT, SCREEN_MARGIN};
+        let Some(height) = self.output_height else {
+            return MAX_HEIGHT;
+        };
+        let applet = &self.core.applet;
+        let panel = if applet.is_horizontal() {
+            let (_, icon_h) = applet.suggested_size(true);
+            let (_, minor) = applet.suggested_padding(true);
+            f32::from(icon_h + 2 * minor)
+        } else {
+            0.0 // vertical panel: the popup opens beside it
+        };
+        (height - panel - SCREEN_MARGIN).clamp(1.0, MAX_HEIGHT)
     }
 
     /// Set a transient status message that auto-clears after 3 seconds.
@@ -694,6 +717,7 @@ impl Application for ConnectApplet {
             sendto_device_type: None,
             // File notification deduplication
             last_received_file: None,
+            output_height: None,
         };
 
         // Connect to D-Bus on startup
@@ -716,6 +740,11 @@ impl Application for ConnectApplet {
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;
+                }
+            }
+            Message::OutputHeight(name, height) => {
+                if name == self.core.applet.output_name {
+                    self.output_height = Some(height);
                 }
             }
             Message::DbusConnected(conn) => {
@@ -2090,13 +2119,34 @@ impl Application for ConnectApplet {
             }
         };
 
-        self.core.applet.popup_container(content).into()
+        self.core
+            .applet
+            .popup_container(content)
+            .max_height(self.popup_max_height())
+            .into()
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
         let mut subscriptions = vec![
             // Subscribe to D-Bus signals for device state changes
             Subscription::run(dbus_signal_subscription),
+            // Logical height of each output, for the popup cap
+            cosmic::iced::event::listen_with(|event, _, _| {
+                use cosmic::iced::event::{wayland, PlatformSpecific};
+                let cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
+                    wayland::Event::Output(evt, _),
+                )) = event
+                else {
+                    return None;
+                };
+                let info = match evt {
+                    wayland::OutputEvent::Created(Some(info))
+                    | wayland::OutputEvent::InfoUpdate(info) => info,
+                    _ => return None,
+                };
+                let (_, height) = info.logical_size?;
+                Some(Message::OutputHeight(info.name?, height as f32))
+            }),
             // Watch for config changes from external sources
             self.core
                 .watch_config::<Config>(crate::config::APP_ID)

@@ -1646,7 +1646,8 @@ impl SmsConversationStore {
                 // scrollable's intrinsic content size consumes all available
                 // height, leaving 0 for the compose row below it. A Fixed height
                 // wrapper is the only way to clear that flag (Fill doesn't);
-                // the value is capped to popup_container's 1000px max.
+                // the value is clamped to the autosize limit, which `view_window`
+                // lowers to the output's height
                 widget::container(thread)
                     .height(cosmic::iced::Length::Fixed(10_000.0))
                     .width(cosmic::iced::Length::Fill)

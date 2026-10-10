@@ -92,6 +92,14 @@ pub mod sms {
     pub const MAX_MESSAGE_LOAD_RETRIES: u8 = 3;
 }
 
+/// Popup geometry.
+pub mod popup {
+    /// libcosmic's `popup_container` height cap; the output cap can only lower it.
+    pub const MAX_HEIGHT: f32 = 1000.0;
+    /// Kept clear beyond the panel slot: panel margin, the 4 px popup offset, and slack.
+    pub const SCREEN_MARGIN: f32 = 16.0;
+}
+
 /// Refresh and polling interval constants.
 pub mod refresh {
     /// Interval for refreshing media player state (seconds).
