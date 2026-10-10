@@ -1,11 +1,22 @@
 //! SMS sending functionality.
 
 use crate::app::Message;
+use crate::fl;
 use kdeconnect_dbus::plugins::ConversationsProxy;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use zbus::zvariant::{Structure, Value};
 use zbus::Connection;
+
+/// Convert a picked file path into the daemon's expected `attachmentUrls` element
+fn attachment_value(path: &std::path::Path) -> Result<Value<'static>, String> {
+    if !path.is_file() {
+        tracing::warn!("attachment vanished before send: {}", path.display());
+        return Err(fl!("attachment-missing"));
+    }
+    let s = path.to_str().ok_or_else(|| fl!("attachment-missing"))?;
+    Ok(Value::from(s.to_owned()))
+}
 
 /// Send an SMS reply to an existing conversation using replyToConversation.
 ///
@@ -21,9 +32,16 @@ pub async fn send_sms_async(
     device_id: String,
     thread_id: i64,
     message: String,
+    attachment: Option<std::path::PathBuf>,
 ) -> Message {
     let conn = conn.lock().await;
     let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
+
+    let attachments: Vec<Value<'_>> = match attachment.as_deref().map(attachment_value) {
+        Some(Ok(v)) => vec![v],
+        Some(Err(e)) => return Message::SmsSendResult(Err(e)),
+        None => vec![],
+    };
 
     let conversations_proxy = match ConversationsProxy::builder(&conn)
         .path(device_path.as_str())
@@ -41,15 +59,13 @@ pub async fn send_sms_async(
         }
     };
 
-    let empty_attachments: Vec<Value<'_>> = vec![];
-
     tracing::debug!(
         "Sending SMS via replyToConversation for thread_id={}",
         thread_id
     );
 
     match conversations_proxy
-        .reply_to_conversation(thread_id, &message, empty_attachments)
+        .reply_to_conversation(thread_id, &message, attachments)
         .await
     {
         Ok(()) => {
@@ -69,10 +85,16 @@ pub async fn send_new_sms_async(
     device_id: String,
     recipients: Vec<String>,
     message: String,
+    attachment: Option<std::path::PathBuf>,
 ) -> Message {
     let conn = conn.lock().await;
     let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
 
+    let attachments: Vec<Value<'_>> = match attachment.as_deref().map(attachment_value) {
+        Some(Ok(v)) => vec![v],
+        Some(Err(e)) => return Message::NewMessageSendResult(Err(e)),
+        None => vec![],
+    };
     let conversations_proxy = match ConversationsProxy::builder(&conn)
         .path(device_path.as_str())
         .ok()
@@ -98,10 +120,9 @@ pub async fn send_new_sms_async(
         .iter()
         .map(|r| Value::Structure(Structure::from((r.clone(),))))
         .collect();
-    let empty_attachments: Vec<Value<'_>> = vec![];
 
     match conversations_proxy
-        .send_without_conversation(addresses, &message, empty_attachments)
+        .send_without_conversation(addresses, &message, attachments)
         .await
     {
         Ok(()) => Message::NewMessageSendResult(Ok("Message sent".to_string())),

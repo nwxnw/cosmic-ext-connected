@@ -3,6 +3,8 @@
 use crate::app::{LoadingPhase, Message, SettingKey, SmsLoadingState};
 use crate::fl;
 use crate::sms::logical::LogicalConversation;
+use crate::sms::StagedAttachment;
+use crate::ui::widgets::warning_style;
 use crate::views::helpers::format_timestamp;
 use base64::Engine;
 use cosmic::applet;
@@ -147,6 +149,87 @@ fn view_attachment<'a>(
         part_id: attachment.part_id,
         unique_identifier: attachment.unique_identifier.clone(),
     })
+    .into()
+}
+
+/// Longest filename shown on the chip; the full name and path are in its tooltip.
+const CHIP_NAME_CHARS: usize = 25;
+
+/// Middle-truncate to `max` characters, keeping the extension visible.
+fn middle_truncate(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let tail = max / 3;
+    let head = max - tail - 1;
+    let start: String = s.chars().take(head).collect();
+    let end: String = s.chars().skip(n - tail).collect();
+    format!("{start}…{end}")
+}
+
+/// The attach control in the compose row: a paperclip when nothing is staged,
+/// the chip for the staged file otherwise. Both fit inside the row's height,
+/// so staging and clearing never resize the popup.
+fn attachment_control<'a>(
+    staged: Option<&'a StagedAttachment>,
+    sending: bool,
+    on_attach: Message,
+    on_clear: Message,
+) -> Element<'a, Message> {
+    let sp = cosmic::theme::active().cosmic().spacing;
+    let Some(att) = staged else {
+        return widget::tooltip(
+            widget::button::icon(widget::icon::from_name("mail-attachment-symbolic").size(16))
+                .on_press_maybe((!sending).then_some(on_attach)),
+            text::caption(fl!("attach-file")),
+            widget::tooltip::Position::Top,
+        )
+        .gap(sp.space_xxxs)
+        .padding(sp.space_xxs)
+        .into();
+    };
+
+    let full_name = att
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let path = att.path.to_string_lossy().to_string();
+    let (glyph, tip) = if att.oversize {
+        (
+            "dialog-warning-symbolic",
+            format!("{}\n{path}", fl!("attachment-too-large")),
+        )
+    } else {
+        ("mail-attachment-symbolic", path)
+    };
+    let mut label = text::caption(middle_truncate(&full_name, CHIP_NAME_CHARS));
+    if att.oversize {
+        label = label.class(cosmic::theme::Text::Custom(warning_style));
+    }
+
+    row![
+        widget::tooltip(
+            row![widget::icon::from_name(glyph).size(14), label]
+                .spacing(sp.space_xxxs)
+                .align_y(Alignment::Center),
+            text::caption(tip),
+            widget::tooltip::Position::Top,
+        )
+        .gap(sp.space_xxxs)
+        .padding(sp.space_xxs),
+        widget::tooltip(
+            widget::button::icon(widget::icon::from_name("edit-clear-symbolic").size(14))
+                .on_press_maybe((!sending).then_some(on_clear)),
+            text::caption(fl!("remove-attachment")),
+            widget::tooltip::Position::Top,
+        )
+        .gap(sp.space_xxxs)
+        .padding(sp.space_xxs),
+    ]
+    .spacing(sp.space_xxxs)
+    .align_y(Alignment::Center)
     .into()
 }
 
@@ -381,6 +464,8 @@ pub struct MessageThreadParams<'a> {
     pub show_copy_hint: bool,
     /// Status message to display (e.g. send confirmation or error)
     pub status_message: Option<&'a str>,
+    /// File staged for the next send, if any
+    pub pending_attachment: Option<&'a StagedAttachment>,
 }
 
 /// Enter sends; Shift+Enter falls through to default newline binding
@@ -614,7 +699,9 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
             .leading_icon(widget::icon::from_name("process-working-symbolic").size(16))
             .into()
     } else {
-        let can_send = !params.sms_compose_text.text().trim().is_empty() && !params.sms_sending;
+        let can_send = (!params.sms_compose_text.text().trim().is_empty()
+            || params.pending_attachment.is_some())
+            && !params.sms_sending;
         widget::button::suggested(fl!("send"))
             .leading_icon(widget::icon::from_name("mail-send-symbolic").size(16))
             .on_press_maybe(if can_send {
@@ -626,9 +713,22 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
     };
 
     let compose_row = applet::padded_control(
-        row![compose_input, send_btn,]
+        column![
+            compose_input,
+            row![
+                attachment_control(
+                    params.pending_attachment,
+                    params.sms_sending,
+                    Message::AttachToSms,
+                    Message::ClearSmsAttachment,
+                ),
+                widget::space::horizontal(),
+                send_btn,
+            ]
             .spacing(sp.space_xxs)
             .align_y(Alignment::Center),
+        ]
+        .spacing(sp.space_xxs),
     );
 
     let mut thread_column = column![header, content, compose_row,]
@@ -658,6 +758,7 @@ pub struct NewMessageParams<'a> {
     pub sending: bool,
     /// Contact suggestions as (contact_name, phone_number) tuples
     pub contact_suggestions: &'a [(String, String)],
+    pub pending_attachment: Option<&'a StagedAttachment>,
 }
 
 /// Render the new message compose view.
@@ -796,9 +897,10 @@ pub fn view_new_message(params: NewMessageParams<'_>) -> Element<'_, Message> {
         .padding(sp.space_xs)
         .max_height(120.0);
 
-    // Send button — enabled when at least one recipient and body is non-empty
-    let send_enabled =
-        !params.recipients.is_empty() && !params.body.text().trim().is_empty() && !params.sending;
+    // Send button — enabled when at least one recipient and body or attachment is non-empty
+    let send_enabled = !params.recipients.is_empty()
+        && (!params.body.text().trim().is_empty() || params.pending_attachment.is_some())
+        && !params.sending;
 
     let send_btn = if params.sending {
         widget::button::standard(fl!("sending"))
@@ -813,9 +915,22 @@ pub fn view_new_message(params: NewMessageParams<'_>) -> Element<'_, Message> {
     };
 
     let send_row = applet::padded_control(
-        row![widget::space::horizontal(), send_btn,]
+        column![
+            message_input,
+            row![
+                attachment_control(
+                    params.pending_attachment,
+                    params.sending,
+                    Message::AttachToNewMessage,
+                    Message::ClearNewMessageAttachment,
+                ),
+                widget::space::horizontal(),
+                send_btn,
+            ]
             .spacing(sp.space_xxs)
             .align_y(Alignment::Center),
+        ]
+        .spacing(sp.space_xxs),
     );
 
     column![
@@ -823,7 +938,6 @@ pub fn view_new_message(params: NewMessageParams<'_>) -> Element<'_, Message> {
         recipient_row,
         chips_section,
         suggestions_section,
-        applet::padded_control(message_input),
         send_row,
         widget::space::vertical(),
     ]

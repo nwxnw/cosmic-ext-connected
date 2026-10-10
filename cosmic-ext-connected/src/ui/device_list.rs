@@ -4,8 +4,8 @@ use crate::app::{DeviceInfo, GroupKind, Message};
 use crate::config::Config;
 use crate::device::DeviceClass;
 use crate::fl;
+use crate::ui::widgets::warning_style;
 use cosmic::applet;
-use cosmic::iced::advanced::widget::text::Style as TextStyle;
 use cosmic::iced::widget::{column, row};
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{self, icon, text};
@@ -193,13 +193,6 @@ fn device_row(device: &DeviceInfo) -> Element<'_, Message> {
 
     // Apply warning color (yellow) to offline status text for better visual indication
     let status_widget: Element<Message> = if is_offline {
-        fn warning_style(theme: &cosmic::Theme) -> TextStyle {
-            let warning_color = theme.cosmic().warning.base;
-            TextStyle {
-                color: Some(warning_color.into()),
-                ..Default::default()
-            }
-        }
         text::caption(status_text)
             .class(theme::Text::Custom(warning_style))
             .into()

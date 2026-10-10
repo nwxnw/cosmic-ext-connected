@@ -179,6 +179,24 @@ For merged conversations, optimistic-send reconciliation matches by `OPTIMISTIC_
 
 New-message compose uses `sendWithoutConversation(addresses, message, attachments)` with explicit recipients. On success, the compose flow returns to the conversation list and keeps the conversation-list subscription active so the phone can sync back the resulting thread.
 
+### Attachments
+
+Both compose surfaces stage one file for the next send, passed through the `attachmentUrls` parameter that `replyToConversation` and `sendWithoutConversation` always declared and always received empty.
+
+**The wire value is a plain absolute path**, not a `file://` URL and not base64, despite the name. The daemon opens it with `QFile`, base64-encodes the contents into the packet and sniffs the MIME type itself (`smsplugin.cpp`). Under Flatpak the chooser portal returns a path under the document portal mount, which the daemon reads on the host as the same user, so no `finish-args` entry is needed.
+
+**The daemon validates nothing.** A path it cannot open becomes an empty attachment that is still dispatched, and the phone drops the whole message, text included, with no error anywhere. Every guard is ours: `stage_attachment` in `store.rs` stats the file at pick time, and `attachment_value` in `send.rs` stats it again before each send because the file can vanish in between. A failed check refuses the send rather than degrading to text-only; the compose text and chip survive for a retry.
+
+Size is advisory. Above `ATTACHMENT_SOFT_WARN_BYTES` the chip carries a warning glyph and tooltip, but the send goes ahead. Nothing in the KDE Connect chain resizes or rejects: the daemon has no size check, the Android plugin hands the decoded bytes to its MMS library as-is, and the only cap is the KDE Connect SMS desktop app's own 600,000-byte limit in its UI. A carrier may reject an oversize MMS, and nothing reports that back.
+
+Each compose surface owns its own staged file, `pending_attachment` for the thread view and `new_message_pending_attachment` for New message, cleared wherever its sibling compose state is cleared. A shared field let a file staged in one surface be sent from the other with no chip in sight.
+
+No local preview is built. The optimistic entry carries an empty attachment list and reconciliation adopts the echo's list (`store.rs`, the uid-upgrade step), so the sent bubble renders through the received-message path. Without that adoption an attachment send reconciles cleanly and renders forever without its image.
+
+The chooser is a portal round trip: the dialog takes focus and the panel tears the popup down, and the `SmsAttachmentSelected` and `NewMessageAttachmentSelected` arms in `app.rs` reopen it on every return path, cancel included, unless the panel left it standing. The double-click gap is in `docs/KNOWN_ISSUES.md`.
+
+Send outcome is unknowable for attachments as for text (see "A send has no terminal state" below); the phone side has two literal `// TODO: Notify other end` in `SmsMmsUtils.kt`. Copy may say "sent" in the hand-off sense, never "delivered".
+
 ### Sync indicator
 
 The conversation list's sync indicator is the OR of **two independent flags** (`sync_active` in
@@ -213,12 +231,9 @@ The KDE Connect daemon sets its Qt application name to `"kdeconnect.daemon"` in 
 - `conversationLoaded` reports `m_known_messages[id].size()` - the count of distinct message UIDs the daemon currently holds **in memory** for that thread - not the phone's authoritative total. It is emitted only from `addMessages()`, so it fires only when the phone has delivered a batch, never on a purely cached read.
 - Reply sending still depends on daemon cache priming before `replyToConversation` can work reliably.
 - Notification correctness depends on careful `last_seen_sms` handling when opening threads and merging incoming data.
-- **A send has no terminal state.** `Ok` from `replyToConversation` / `sendWithoutConversation`
-  means the D-Bus call worked, nothing more (`docs/DBUS.md` → "A void method's `Ok`"); the only
-  evidence of delivery is the phone's echo, so an unconfirmed send stays an optimistic bubble with
-  no failed state. Its conversation-list preview is stamped with local `SystemTime::now()` and the
-  list sorts on that, so until the echo arrives it outranks real phone timestamps.
+- **A send has no terminal state.** `Ok` from `replyToConversation` / `sendWithoutConversation` means the D-Bus call worked, nothing more (`docs/DBUS.md` → "A void method's `Ok`"); the only evidence of delivery is the phone's echo, so an unconfirmed send stays an optimistic bubble with no failed state. Its conversation-list preview is stamped with local `SystemTime::now()` and the list sorts on that, so until the echo arrives it outranks real phone timestamps.
 - **A pre-`26.08.0` daemon silently discards a reply when the thread is not in its cache.** Upstream BUG 517659, fixed in `3bf16922` and first shipped in `v26.08.0`: `replyToConversation()` logged a warning and dropped the message outright when `m_conversations` did not hold the target thread, which is the state after a device reconnect, or before the list has loaded for the session. **This is the daemon's behaviour, not applet logic** - the cache-priming and cold-start constraints above describe what Connected does about it, not a defect Connected can repair. Connected cannot even detect it: the method returns void (see "A send has no terminal state" above), so the optimistic bubble stands for a message that was never sent. Measured 2026-08-28 by calling `replyToConversation` directly with a thread ID that does not exist: `23.08.5` logs `Got a conversationID for a conversation with no messages!` and returns, while `26.08.0` logs `not in cache, requesting from phone` and fetches. Pop's `23.08.5` and Fedora's `26.04.3` lack the fix; Arch's `26.08.0` has it.
+- **An attachment-only MMS can echo back without its attachment.** A text-less send sometimes come back with `eventField 0` and an empty attachment list, so the bubble renders as a bare timestamp. No pattern found; upstream. See `docs/KNOWN_ISSUES.md`.
 
 ## Reference
 

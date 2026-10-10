@@ -5,7 +5,9 @@
 use crate::app::{LoadingPhase, Message, SmsLoadingState};
 use crate::config::Config;
 use crate::constants::notifications::NORMAL_NOTIFICATION_TIMEOUT_MS;
-use crate::constants::sms::{MESSAGES_PER_PAGE, NEW_MESSAGE_SYNC_INDICATOR_SECS};
+use crate::constants::sms::{
+    ATTACHMENT_SOFT_WARN_BYTES, MESSAGES_PER_PAGE, NEW_MESSAGE_SYNC_INDICATOR_SECS,
+};
 use crate::fl;
 use crate::sms::logical::{merge_into_logical, split_candidate_thread_ids, LogicalConversation};
 use crate::sms::{
@@ -36,6 +38,14 @@ use zbus::Connection;
 pub struct SmsCtx<'a> {
     pub conn: Option<&'a Arc<Mutex<Connection>>>,
     pub config: &'a Config,
+}
+
+/// A file staged for the next send, validated at pick time.
+#[derive(Debug, Clone)]
+pub struct StagedAttachment {
+    pub path: std::path::PathBuf,
+    /// Over `ATTACHMENT_SOFT_WARN_BYTES`. Sent anyway; shown on the chip.
+    pub oversize: bool,
 }
 
 /// Reply from the store back to the parent app describing app-level
@@ -113,6 +123,9 @@ pub struct SmsConversationStore {
     pub(crate) sms_loading_state: SmsLoadingState,
     pub(crate) contacts: ContactLookup,
 
+    // File staged for the next send, with its oversize flag
+    pub(crate) pending_attachment: Option<StagedAttachment>,
+
     // Reply compose / send
     pub(crate) sms_compose_text: widget::text_editor::Content,
     pub(crate) sms_sending: bool,
@@ -127,6 +140,7 @@ pub struct SmsConversationStore {
     pub(crate) new_message_recipients: Vec<(String, String)>,
     pub(crate) new_message_recipient_input: String,
     pub(crate) new_message_body: widget::text_editor::Content,
+    pub(crate) new_message_pending_attachment: Option<StagedAttachment>,
     pub(crate) new_message_sending: bool,
     pub(crate) contact_suggestions: Vec<(String, String)>,
 
@@ -164,6 +178,7 @@ impl SmsConversationStore {
             messages: Vec::new(),
             sms_loading_state: SmsLoadingState::Idle,
             contacts: ContactLookup::default(),
+            pending_attachment: None,
             sms_compose_text: widget::text_editor::Content::new(),
             sms_sending: false,
             sms_sending_body: None,
@@ -173,6 +188,7 @@ impl SmsConversationStore {
             new_message_recipients: Vec::new(),
             new_message_recipient_input: String::new(),
             new_message_body: widget::text_editor::Content::new(),
+            new_message_pending_attachment: None,
             new_message_sending: false,
             contact_suggestions: Vec::new(),
             last_seen_sms: HashMap::new(),
@@ -185,6 +201,25 @@ impl SmsConversationStore {
     /// Check if loading more messages (pagination)
     pub(crate) fn is_loading_more_messages(&self) -> bool {
         matches!(self.sms_loading_state, SmsLoadingState::LoadingMoreMessages)
+    }
+
+    /// Validate a picked path and stage it into `slot`
+    fn stage_attachment(
+        slot: &mut Option<StagedAttachment>,
+        path: Option<std::path::PathBuf>,
+    ) -> SmsReply {
+        let Some(path) = path else {
+            return SmsReply::NoOp;
+        };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return SmsReply::Status(fl!("attachment-unreadable"));
+        };
+        if !meta.is_file() {
+            return SmsReply::Status(fl!("attachment-unreadable"));
+        }
+        let oversize = meta.len() > ATTACHMENT_SOFT_WARN_BYTES;
+        *slot = Some(StagedAttachment { path, oversize });
+        SmsReply::NoOp
     }
 
     /// Settle an in-flight older page: clear the spinner, refresh pagination
@@ -1069,6 +1104,22 @@ impl SmsConversationStore {
                 self.sms_compose_text.perform(action);
                 (cosmic::app::Task::none(), SmsReply::NoOp)
             }
+            Message::SmsAttachmentSelected(path) => {
+                let reply = Self::stage_attachment(&mut self.pending_attachment, path);
+                (cosmic::app::Task::none(), reply)
+            }
+            Message::ClearSmsAttachment => {
+                self.pending_attachment = None;
+                (cosmic::app::Task::none(), SmsReply::NoOp)
+            }
+            Message::NewMessageAttachmentSelected(path) => {
+                let reply = Self::stage_attachment(&mut self.new_message_pending_attachment, path);
+                (cosmic::app::Task::none(), reply)
+            }
+            Message::ClearNewMessageAttachment => {
+                self.new_message_pending_attachment = None;
+                (cosmic::app::Task::none(), SmsReply::NoOp)
+            }
             Message::SendSms => {
                 tracing::debug!(
                     "State: conn={}, device_id={:?}, thread_id={:?}, text_empty={}, sending={}",
@@ -1084,7 +1135,9 @@ impl SmsConversationStore {
                     self.current_thread_id,
                 ) {
                     let message_text = self.sms_compose_text.text();
-                    if !message_text.trim().is_empty() && !self.sms_sending {
+                    let has_content =
+                        !message_text.trim().is_empty() || self.pending_attachment.is_some();
+                    if has_content && !self.sms_sending {
                         self.sms_sending = true;
                         self.sms_sending_body = Some(message_text.clone());
                         // Apply the split-by-case rule: for symmetric merges
@@ -1114,6 +1167,7 @@ impl SmsConversationStore {
                                     device_id.clone(),
                                     reply_target,
                                     message_text,
+                                    self.pending_attachment.as_ref().map(|a| a.path.clone()),
                                 ),
                                 cosmic::Action::App,
                             ),
@@ -1121,8 +1175,9 @@ impl SmsConversationStore {
                         );
                     } else {
                         tracing::warn!(
-                            "SendSms conditions not met: text_empty={}, sending={}",
+                            "SendSms conditions not met: text_empty={}, has_attachment={}, sending={}",
                             message_text.trim().is_empty(),
+                            self.pending_attachment.is_some(),
                             self.sms_sending
                         );
                     }
@@ -1137,7 +1192,7 @@ impl SmsConversationStore {
                     Ok(sent_body) => {
                         tracing::debug!("SMS sent successfully");
                         self.sms_compose_text = widget::text_editor::Content::new();
-
+                        self.pending_attachment = None;
                         if let Some(thread_id) = self.current_thread_id {
                             let now_ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -1423,8 +1478,10 @@ impl SmsConversationStore {
             Message::SendNewMessage => {
                 if let (Some(conn), Some(device_id)) = (ctx.conn, self.sms_device_id.as_ref()) {
                     let body_text = self.new_message_body.text();
+                    let has_content = !body_text.trim().is_empty()
+                        || self.new_message_pending_attachment.is_some();
                     if !self.new_message_recipients.is_empty()
-                        && !body_text.trim().is_empty()
+                        && has_content
                         && !self.new_message_sending
                     {
                         let recipients: Vec<String> = self
@@ -1434,6 +1491,11 @@ impl SmsConversationStore {
                             .collect();
                         let message = body_text;
                         self.new_message_sending = true;
+                        tracing::info!(
+                            "Dispatching send_new_sms_async recipients={} has_attachment={}",
+                            recipients.len(),
+                            self.new_message_pending_attachment.is_some()
+                        );
                         return (
                             cosmic::app::Task::perform(
                                 send_new_sms_async(
@@ -1441,12 +1503,25 @@ impl SmsConversationStore {
                                     device_id.clone(),
                                     recipients,
                                     message,
+                                    self.new_message_pending_attachment
+                                        .as_ref()
+                                        .map(|a| a.path.clone()),
                                 ),
                                 cosmic::Action::App,
                             ),
                             SmsReply::NoOp,
                         );
+                    } else {
+                        tracing::warn!(
+                            "SendNewMessage conditions not met: recipients={}, body_empty={}, has_attachment={}, sending={}",
+                            self.new_message_recipients.len(),
+                            body_text.trim().is_empty(),
+                            self.new_message_pending_attachment.is_some(),
+                            self.new_message_sending
+                        );
                     }
+                } else {
+                    tracing::warn!("SendNewMessage missing required state");
                 }
                 (cosmic::app::Task::none(), SmsReply::NoOp)
             }
@@ -1489,6 +1564,7 @@ impl SmsConversationStore {
                         let success_msg = msg.clone();
                         self.new_message_recipients.clear();
                         self.new_message_recipient_input.clear();
+                        self.new_message_pending_attachment = None;
                         self.new_message_body = widget::text_editor::Content::new();
                         // Enable subscription to catch the new conversation when the phone
                         // syncs back. The subscription listens over a longer window than a
@@ -1557,6 +1633,7 @@ impl SmsConversationStore {
                     contacts: &self.contacts,
                     loading_state: &self.sms_loading_state,
                     sms_compose_text: &self.sms_compose_text,
+                    pending_attachment: self.pending_attachment.as_ref(),
                     sms_sending: self.sms_sending,
                     sync_active: self.message_sync_active,
                     pressed_bubble_uid: self.pressed_bubble_uid,
@@ -1581,6 +1658,7 @@ impl SmsConversationStore {
                 body: &self.new_message_body,
                 sending: self.new_message_sending,
                 contact_suggestions: &self.contact_suggestions,
+                pending_attachment: self.new_message_pending_attachment.as_ref(),
             }),
         }
     }
