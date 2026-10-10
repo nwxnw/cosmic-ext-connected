@@ -1,6 +1,9 @@
 # Changelog
 
 ## [0.9.0] - Unreleased
+### Added
+- Send photos and files with your messages. The reply box and New message both have an attach button, the chosen file shows as a chip you can remove, and the popup comes back on its own after the file picker closes. Large files are flagged but still allowed.
+
 ### Changed
 - The Flatpak sandbox no longer has unrestricted access to the session bus. It now talks only to KDE Connect and the notification service.
 

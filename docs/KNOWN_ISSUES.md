@@ -16,6 +16,38 @@ An MMS whose attachment is a PDF, document or other non-media file renders as an
 
 This limitation exists in the KDE Connect Android app which only supports audio, text, image and video images. This affects every KDE Connect desktop client, not only Connected
 
+## Attachment-Only MMS May Render Without Its Attachment
+
+An attachment sent with no text delivers to the recipient correctly and usually shows in its own bubble in Connected. Occasionally the sent bubble carries only a timestamp, with no pattern found. When it happens the daemon has reported the message without attachment metadata, which appears to be a KDE Connect limitation, not an applet bug.
+
+### Symptoms
+- The attachment arrives on the recipient's phone either way
+- Occasionally the sent bubble shows a timestamp and nothing else, with no image and no placeholder
+- The same attachment sent with text has not been seen to fail
+
+### Technical details
+
+In the captured case the daemon emitted `eventField 0`, an empty body and an empty attachment list, while the same image sent with text arrived as `eventField 1` with a populated list. Both came in one bulk `conversationUpdated` batch, a full re-fetch from the phone's message store, so the metadata was missing on re-read, not only in the live echo. Connected skips the empty body and the empty list, leaving the timestamp caption.
+
+Captured 2026-07-26 against kdeconnect 23.08.5 on a self-thread. Most sends on the same daemon render normally.
+
+## Popup Does Not Reopen After a Double-Click in the File Chooser
+
+Choosing an attachment opens the system file chooser, which takes focus and closes the applet popup. Connected reopens the popup when the chooser returns, chosen or cancelled, except when the file was chosen by double-click.
+
+### Symptoms
+- Double-click a file: the dialog closes and the popup stays closed
+- Open, Enter or Escape: the popup reopens
+- Nothing is lost: the file is staged and shows as a chip once the popup is open
+
+### Technical details
+
+The chooser activates on the second press, so the reopen is requested while the mouse button is still held and the popup never maps. The exact refusal has not been captured.
+
+### Workaround
+
+Pick with Open or Enter, or click the panel icon once after a double-click.
+
 ## Some MMS Videos Fail to Play in COSMIC Player
 
 Opening an MMS video attachment can launch COSMIC Player and then fail with an error suggesting the file is missing. The file is present and intact — this is a COSMIC Player / GStreamer limitation with iPhone-recorded video, not an applet bug.
