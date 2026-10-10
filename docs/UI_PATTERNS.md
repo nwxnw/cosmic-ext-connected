@@ -95,6 +95,9 @@ bounds instead requires `.on_press_with_rectangle()` on the panel button and a `
 variant that the view can emit — see `cosmic-ext-whether`. Only worth it if placement is actually
 wrong; it changes positioning, so re-test both panel orientations if adopted.
 
+**Popup height.** The cap is the autosize limit on `popup_container`, which libcosmic sets to 1000 px. `view_window` lowers it with `.max_height(self.popup_max_height())`, using the logical height of the panel's own output from the Wayland output events, minus the panel and a 16 px margin. A `Length::Fixed` wrapper inside the popup clamps to that limit rather than overriding it, which is why the thread view's `Fixed(10_000.0)` ends up exactly at the cap. The height arrives in `OutputEvent::Created` when the applet starts; a resolution or scale change while the panel runs doesn't send `InfoUpdate`, so the old cap holds until the panel restarts.
+
+
 ## View Lifetimes
 
 Use explicit lifetime annotations:
