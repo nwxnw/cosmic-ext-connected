@@ -2,6 +2,19 @@
 
 Known issues and workarounds in Connected.
 
+## Non-Media Attachments Are Invisible in Threads
+
+An MMS whose attachment is a PDF, document or other non-media file renders as an empty bubble. The file itself is sent and delivered correctly. This is a KDE Connect Android limitation, not an applet bug.
+
+### Symptoms
+- Send a PDF with no accompanying text produces a "Sending" bubble that is later joined by (or replaced with) an empty bubble carrying only a timestamp
+- Received non-media attachments show the same empty bubble
+- The conversation list preview for the thread is also empty, since there is no body and no attachment flag
+- Images, videos and audio in the same thread render normally
+
+### Technical details
+
+This limitation exists in the KDE Connect Android app which only supports audio, text, image and video images. This affects every KDE Connect desktop client, not only Connected
 
 ## Some MMS Videos Fail to Play in COSMIC Player
 
