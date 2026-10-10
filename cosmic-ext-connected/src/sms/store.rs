@@ -40,6 +40,14 @@ pub struct SmsCtx<'a> {
     pub config: &'a Config,
 }
 
+/// A file staged for the next send, validated at pick time.
+#[derive(Debug, Clone)]
+pub struct StagedAttachment {
+    pub path: std::path::PathBuf,
+    /// Over `ATTACHMENT_SOFT_WARN_BYTES`. Sent anyway; shown on the chip.
+    pub oversize: bool,
+}
+
 /// Reply from the store back to the parent app describing app-level
 /// state changes the caller must apply.
 #[derive(Debug)]
@@ -115,8 +123,8 @@ pub struct SmsConversationStore {
     pub(crate) sms_loading_state: SmsLoadingState,
     pub(crate) contacts: ContactLookup,
 
-    // Path of file staged for the next send, if any
-    pub(crate) pending_attachment: Option<std::path::PathBuf>,
+    // File staged for the next send, with its oversize flag
+    pub(crate) pending_attachment: Option<StagedAttachment>,
 
     // Reply compose / send
     pub(crate) sms_compose_text: widget::text_editor::Content,
@@ -132,7 +140,7 @@ pub struct SmsConversationStore {
     pub(crate) new_message_recipients: Vec<(String, String)>,
     pub(crate) new_message_recipient_input: String,
     pub(crate) new_message_body: widget::text_editor::Content,
-    pub(crate) new_message_pending_attachment: Option<std::path::PathBuf>,
+    pub(crate) new_message_pending_attachment: Option<StagedAttachment>,
     pub(crate) new_message_sending: bool,
     pub(crate) contact_suggestions: Vec<(String, String)>,
 
@@ -197,7 +205,7 @@ impl SmsConversationStore {
 
     /// Validate a picked path and stage it into `slot`
     fn stage_attachment(
-        slot: &mut Option<std::path::PathBuf>,
+        slot: &mut Option<StagedAttachment>,
         path: Option<std::path::PathBuf>,
     ) -> SmsReply {
         let Some(path) = path else {
@@ -210,13 +218,8 @@ impl SmsConversationStore {
             return SmsReply::Status(fl!("attachment-unreadable"));
         }
         let oversize = meta.len() > ATTACHMENT_SOFT_WARN_BYTES;
-        *slot = Some(path);
-        // Warn but still accept - carrier limits aren't knowable from here
-        if oversize {
-            SmsReply::Status(fl!("attachment-too-large"))
-        } else {
-            SmsReply::NoOp
-        }
+        *slot = Some(StagedAttachment { path, oversize });
+        SmsReply::NoOp
     }
 
     /// Settle an in-flight older page: clear the spinner, refresh pagination
@@ -1164,7 +1167,7 @@ impl SmsConversationStore {
                                     device_id.clone(),
                                     reply_target,
                                     message_text,
-                                    self.pending_attachment.clone(),
+                                    self.pending_attachment.as_ref().map(|a| a.path.clone()),
                                 ),
                                 cosmic::Action::App,
                             ),
@@ -1500,7 +1503,9 @@ impl SmsConversationStore {
                                     device_id.clone(),
                                     recipients,
                                     message,
-                                    self.new_message_pending_attachment.clone(),
+                                    self.new_message_pending_attachment
+                                        .as_ref()
+                                        .map(|a| a.path.clone()),
                                 ),
                                 cosmic::Action::App,
                             ),
@@ -1628,7 +1633,7 @@ impl SmsConversationStore {
                     contacts: &self.contacts,
                     loading_state: &self.sms_loading_state,
                     sms_compose_text: &self.sms_compose_text,
-                    pending_attachment: self.pending_attachment.as_deref(),
+                    pending_attachment: self.pending_attachment.as_ref(),
                     sms_sending: self.sms_sending,
                     sync_active: self.message_sync_active,
                     pressed_bubble_uid: self.pressed_bubble_uid,
@@ -1653,7 +1658,7 @@ impl SmsConversationStore {
                 body: &self.new_message_body,
                 sending: self.new_message_sending,
                 contact_suggestions: &self.contact_suggestions,
-                pending_attachment: self.new_message_pending_attachment.as_deref(),
+                pending_attachment: self.new_message_pending_attachment.as_ref(),
             }),
         }
     }
