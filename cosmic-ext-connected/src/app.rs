@@ -225,8 +225,6 @@ pub enum Message {
         thread_id: i64,
         ok: bool,
     },
-    /// Message thread scrolled - used for prefetching older messages
-    MessageThreadScrolled(scrollable::Viewport),
     /// User pressed Load older at the top of the thread
     LoadOlderMessages,
     /// User started pressing a message bubble (for long-press copy)
@@ -1963,7 +1961,6 @@ impl Application for ConnectApplet {
             | Message::ConversationSyncComplete { .. }
             | Message::ConversationListStreamEnded { .. }
             | Message::OlderMessagesRequested { .. }
-            | Message::MessageThreadScrolled(_)
             | Message::LoadOlderMessages
             | Message::BubblePressStarted { .. }
             | Message::BubblePressReleased

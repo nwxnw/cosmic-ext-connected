@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.10.0] - Unreleased
+### Changed
+- Older messages in a conversation load from the Load older button rather than automatically when you scroll to the top. This avoids a crash when the popup opens on a conversation.
+
 ## [0.9.0] - 2026-10-24
 Photos and files can now be attached to SMS messages, and conversations load, scroll and reply more reliably.
 ### Added

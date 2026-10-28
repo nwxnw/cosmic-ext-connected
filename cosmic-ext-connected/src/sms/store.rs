@@ -839,14 +839,6 @@ impl SmsConversationStore {
                 // ok == true; wait for streamed messages / ConversationStoreLoaded
                 (cosmic::app::Task::none(), SmsReply::NoOp)
             }
-            Message::MessageThreadScrolled(viewport) => {
-                // Prefetch older messages when user scrolls near the top
-                const PREFETCH_THRESHOLD_PX: f32 = 100.0;
-                if viewport.absolute_offset_reversed().y < PREFETCH_THRESHOLD_PX {
-                    return (self.request_older_page(ctx), SmsReply::NoOp);
-                }
-                (cosmic::app::Task::none(), SmsReply::NoOp)
-            }
 
             Message::LoadOlderMessages => (self.request_older_page(ctx), SmsReply::NoOp),
 
