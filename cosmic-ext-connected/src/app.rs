@@ -688,6 +688,16 @@ impl ConnectApplet {
             }
         })
     }
+
+    /// The chooser takes focus and the panel tears the popup down. Bring it
+    /// back on every result, cancel included, unless the panel left it standing.
+    fn reopen_after_chooser(&self) -> cosmic::app::Task<Message> {
+        if self.popup.is_none() {
+            Self::open_popup_task()
+        } else {
+            cosmic::app::Task::none()
+        }
+    }
 }
 
 impl Application for ConnectApplet {
@@ -1051,15 +1061,8 @@ impl Application for ConnectApplet {
                 return Self::pick_file(fl!("attach-file"), Message::NewMessageAttachmentSelected)
             }
 
-            // The portal dialog takes focus and the panel tears the popup
-            // down. Bring it back on every path, cancel included, unless
-            // the panel left it standing.
             Message::SmsAttachmentSelected(..) | Message::NewMessageAttachmentSelected(_) => {
-                let reopen = if self.popup.is_none() {
-                    Self::open_popup_task()
-                } else {
-                    cosmic::app::Task::none()
-                };
+                let reopen = self.reopen_after_chooser();
                 let staged = self.delegate_to_sms(message);
                 return cosmic::app::Task::batch([reopen, staged]);
             }
@@ -1070,18 +1073,22 @@ impl Application for ConnectApplet {
                 return Self::pick_file(fl!("share-file"), Message::FileSelected);
             }
             Message::FileSelected(path) => {
-                if let (Some(conn), Some(device_id)) = (
+                let reopen = self.reopen_after_chooser();
+                let share = match (
                     self.dbus_connection.clone(),
                     self.pending_share_device.take(),
+                    path,
                 ) {
-                    if let Some(path) = path {
+                    (Some(conn), Some(device_id), Some(path)) => {
                         self.set_status("Sharing file...".to_string());
-                        return cosmic::app::Task::perform(
-                            share_file_async(conn.clone(), device_id, path),
+                        cosmic::app::Task::perform(
+                            share_file_async(conn, device_id, path),
                             |result| cosmic::Action::App(Message::ShareComplete(result)),
-                        );
+                        )
                     }
-                }
+                    _ => cosmic::app::Task::none(),
+                };
+                return cosmic::app::Task::batch([reopen, share]);
             }
             Message::ShareTextInput(text) => {
                 self.share_text_input = text;
