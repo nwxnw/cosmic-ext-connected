@@ -6,7 +6,7 @@ license.workspace = true
 description = "D-Bus client library for KDE Connect daemon"
 
 [dependencies]
-dirs = "5"
+dirs = "7"
 zbus.workspace = true
 tokio.workspace = true
 serde.workspace = true

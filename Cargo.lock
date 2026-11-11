@@ -927,7 +927,7 @@ dependencies = [
  "atomicwrites",
  "cosmic-config-derive",
  "cosmic-settings-daemon-zbus",
- "dirs 7.0.0",
+ "dirs",
  "futures-util",
  "iced_futures",
  "known-folders",
@@ -1090,7 +1090,7 @@ dependencies = [
  "almost",
  "configparser",
  "cosmic-config",
- "dirs 7.0.0",
+ "dirs",
  "hex_color",
  "iced_core",
  "palette",
@@ -1292,32 +1292,11 @@ dependencies = [
 
 [[package]]
 name = "dirs"
-version = "5.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
-dependencies = [
- "dirs-sys 0.4.1",
-]
-
-[[package]]
-name = "dirs"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
 dependencies = [
- "dirs-sys 0.5.0",
-]
-
-[[package]]
-name = "dirs-sys"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
-dependencies = [
- "libc",
- "option-ext",
- "redox_users 0.4.6",
- "windows-sys 0.48.0",
+ "dirs-sys",
 ]
 
 [[package]]
@@ -1328,7 +1307,7 @@ checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
 dependencies = [
  "libc",
  "option-ext",
- "redox_users 0.5.3",
+ "redox_users",
  "windows-sys 0.61.2",
 ]
 
@@ -2814,7 +2793,7 @@ dependencies = [
 name = "kdeconnect-dbus"
 version = "0.10.0"
 dependencies = [
- "dirs 5.0.1",
+ "dirs",
  "serde",
  "serde_json",
  "tokio",
@@ -4198,17 +4177,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags 2.13.2",
-]
-
-[[package]]
-name = "redox_users"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
-dependencies = [
- "getrandom 0.2.17",
- "libredox",
- "thiserror 1.0.69",
 ]
 
 [[package]]
