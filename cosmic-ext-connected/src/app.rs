@@ -672,23 +672,18 @@ impl ConnectApplet {
         cosmic::app::Task::batch([sms_task, reply_task])
     }
 
-    fn pick_attachment(
+    fn pick_file(
+        title: String,
         to_message: impl FnOnce(Option<std::path::PathBuf>) -> Message + Send + 'static,
     ) -> cosmic::app::Task<Message> {
         cosmic::task::future(async move {
             use cosmic::dialog::file_chooser;
             let result = file_chooser::open::Dialog::new()
-                .title(fl!("attach-file"))
+                .title(title)
                 .open_file()
                 .await;
             match result {
-                Ok(response) => to_message(
-                    response
-                        .0
-                        .uris()
-                        .first()
-                        .and_then(|u| u.to_file_path().ok()),
-                ),
+                Ok(response) => to_message(response.url().to_file_path().ok()),
                 Err(_) => to_message(None),
             }
         })
@@ -1047,13 +1042,13 @@ impl Application for ConnectApplet {
                 else {
                     return cosmic::app::Task::none();
                 };
-                return Self::pick_attachment(move |path| {
+                return Self::pick_file(fl!("attach-file"), move |path| {
                     Message::SmsAttachmentSelected((device_id, thread_id), path)
                 });
             }
 
             Message::AttachToNewMessage => {
-                return Self::pick_attachment(Message::NewMessageAttachmentSelected)
+                return Self::pick_file(fl!("attach-file"), Message::NewMessageAttachmentSelected)
             }
 
             // The portal dialog takes focus and the panel tears the popup
@@ -1072,23 +1067,7 @@ impl Application for ConnectApplet {
             // Share
             Message::ShareFile(device_id) => {
                 self.pending_share_device = Some(device_id);
-                return cosmic::task::future(async {
-                    use cosmic::dialog::file_chooser;
-                    let result = file_chooser::open::Dialog::new()
-                        .title("Share File")
-                        .open_file()
-                        .await;
-                    match result {
-                        Ok(response) => Message::FileSelected(
-                            response
-                                .0
-                                .uris()
-                                .first()
-                                .and_then(|u| u.to_file_path().ok()),
-                        ),
-                        Err(_) => Message::FileSelected(None),
-                    }
-                });
+                return Self::pick_file(fl!("share-file"), Message::FileSelected);
             }
             Message::FileSelected(path) => {
                 if let (Some(conn), Some(device_id)) = (
