@@ -11,26 +11,6 @@ use zbus::zvariant::{OwnedValue, Value};
     default_service = "org.kde.kdeconnect"
 )]
 pub trait Sms {
-    /// Request the phone to send all conversation threads.
-    /// This triggers the phone to send conversation data which can then be
-    /// retrieved via the Conversations interface.
-    #[zbus(name = "requestAllConversations")]
-    fn request_all_conversations(&self) -> zbus::Result<()>;
-
-    /// Request messages from a specific conversation.
-    ///
-    /// # Arguments
-    /// * `thread_id` - The conversation thread ID
-    /// * `start_timestamp` - Timestamp to start from (0 for all)
-    /// * `count` - Maximum number of messages to return
-    #[zbus(name = "requestConversation")]
-    fn request_conversation(
-        &self,
-        thread_id: i64,
-        start_timestamp: i64,
-        count: i64,
-    ) -> zbus::Result<()>;
-
     /// Request a full-size attachment from the phone.
     ///
     /// The daemon checks its cache first, and requests from the phone if needed.
@@ -44,8 +24,6 @@ pub trait Sms {
     fn get_attachment(&self, part_id: i64, unique_identifier: &str) -> zbus::Result<()>;
 
     /// Send an SMS message directly via the SMS plugin.
-    /// This is more reliable than replyToConversation as it doesn't depend
-    /// on the daemon's conversation cache.
     ///
     /// # Arguments
     /// * `addresses` - List of recipient addresses (phone numbers as D-Bus structs)
@@ -96,20 +74,6 @@ pub trait Conversations {
     /// The msg parameter contains the conversation data as a variant.
     #[zbus(signal, name = "conversationCreated")]
     fn conversation_created(&self, msg: OwnedValue) -> zbus::Result<()>;
-
-    /// Reply to an existing conversation thread with a text message.
-    ///
-    /// # Arguments
-    /// * `conversation_id` - The thread ID to reply to
-    /// * `message` - The text message to send
-    /// * `attachment_urls` - URLs of attachments (empty for text-only messages)
-    #[zbus(name = "replyToConversation")]
-    fn reply_to_conversation(
-        &self,
-        conversation_id: i64,
-        message: &str,
-        attachment_urls: Vec<Value<'_>>,
-    ) -> zbus::Result<()>;
 
     /// Send a message to a recipient without specifying a conversation ID.
     ///
@@ -424,20 +388,6 @@ pub fn parse_conversations(values: Vec<OwnedValue>) -> Vec<ConversationSummary> 
     }
 
     summaries
-}
-
-/// Parse messages for a specific conversation thread.
-pub fn parse_messages(values: Vec<OwnedValue>, thread_id: i64) -> Vec<SmsMessage> {
-    let mut messages: Vec<SmsMessage> = values
-        .iter()
-        .filter_map(parse_sms_message)
-        .filter(|msg| msg.thread_id == thread_id)
-        .collect();
-
-    // Sort by date ascending (oldest first for display)
-    messages.sort_by_key(|m| m.date);
-
-    messages
 }
 
 /// Canonicalize a phone number by removing formatting characters.
