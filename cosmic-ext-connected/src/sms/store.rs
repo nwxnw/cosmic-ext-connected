@@ -288,6 +288,10 @@ impl SmsConversationStore {
         let Some(path) = path else {
             return SmsReply::NoOp;
         };
+        // The daemon takes attachment paths as D-Bus strings, so they must be UTF-8.
+        if path.to_str().is_none() {
+            return SmsReply::Status(fl!("attachment-unreadable"));
+        }
         let Ok(meta) = std::fs::metadata(&path) else {
             return SmsReply::Status(fl!("attachment-unreadable"));
         };
