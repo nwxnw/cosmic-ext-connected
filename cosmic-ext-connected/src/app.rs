@@ -98,7 +98,7 @@ pub enum Message {
     /// Initiate file sharing (opens file picker)
     ShareFile(String),
     /// File was selected from picker
-    FileSelected(Option<PathBuf>),
+    FileSelected(String, Option<PathBuf>),
     /// Initiate text sharing
     ShareText(String, String),
     /// Share operation completed
@@ -520,8 +520,6 @@ pub struct ConnectApplet {
     view_mode: ViewMode,
     /// Currently selected device ID (for device page navigation)
     selected_device: Option<String>,
-    /// Device ID awaiting file selection from file picker
-    pending_share_device: Option<String>,
     /// Text input for sharing
     share_text_input: String,
     /// Timestamp of last D-Bus signal refresh (for debouncing)
@@ -733,7 +731,6 @@ impl Application for ConnectApplet {
             loading: true,
             view_mode: ViewMode::DeviceList,
             selected_device: None,
-            pending_share_device: None,
             share_text_input: String::new(),
             last_signal_refresh: std::time::Instant::now(),
             signal_refresh_pending: false,
@@ -1069,17 +1066,14 @@ impl Application for ConnectApplet {
 
             // Share
             Message::ShareFile(device_id) => {
-                self.pending_share_device = Some(device_id);
-                return Self::pick_file(fl!("share-file"), Message::FileSelected);
+                return Self::pick_file(fl!("share-file"), move |path| {
+                    Message::FileSelected(device_id, path)
+                });
             }
-            Message::FileSelected(path) => {
+            Message::FileSelected(device_id, path) => {
                 let reopen = self.reopen_after_chooser();
-                let share = match (
-                    self.dbus_connection.clone(),
-                    self.pending_share_device.take(),
-                    path,
-                ) {
-                    (Some(conn), Some(device_id), Some(path)) => {
+                let share = match (self.dbus_connection.clone(), path) {
+                    (Some(conn), Some(path)) => {
                         self.set_status("Sharing file...".to_string());
                         cosmic::app::Task::perform(
                             share_file_async(conn, device_id, path),
