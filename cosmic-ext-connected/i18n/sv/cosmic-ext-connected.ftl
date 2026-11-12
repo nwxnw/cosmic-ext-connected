@@ -9,47 +9,30 @@ error = Fel
 unknown = Okänd
 device = Enhet
 devices = Enheter
-actions = Åtgärder
 refresh = Uppdatera
 retry = Försök igen
 
 # Enhetslista
 no-devices = Inga enheter
 no-devices-hint = Se till att enheter är upptäckbara.
-loading-devices = Laddar enheter...
 
 # Enhetsstatus
 paired = Parade
 not-paired = inte parade
 connected = Ansluten
-online = Online
 offline = Offline
-available = Tillgänglig
-discovered = Upptäckt
-battery = Batteri
-battery-level = { $level }%
-charging = laddar
 
 pairing-request = Parkopplingsförfrågan
 pairing = Parkopplar...
-connected-paired = Ansluten och parade
-paired-offline = Parade (offline)
-visible-not-paired = Synlig men inte parade
-pairing-requested-by-device = Parkoppling begärd av enheten
-pairing-request-sent = Parkopplingsförfrågan skickad...
 pairing-failed = Parkopplingen misslyckades: { $error }
 
 # Enhetsåtgärder
-ping = Ping
 send-ping = Skicka ping
-share = Dela
 share-file = Dela fil
 share-clipboard = Skicka urklipp
 share-text = Dela text
 send-text = Skicka text
-sms = SMS
 sms-messages = SMS Meddelanden
-messages = Meddelanden
 media = Media
 media-controls = Mediekontroller
 notifications = Aviseringar
@@ -70,12 +53,8 @@ unpair-offline-note = Den här enheten är offline. Parkopplingen träder nu i k
 accept = Acceptera
 reject = Avvisa
 cancel = Avbryt
-pair-request-received = Parkopplingsförfrågan mottagen från { $device }
-pair-request-sent = Parkopplingsförfrågan skickad
 device-wants-to-pair = Den här enheten vill para ihop med dig
 waiting-for-device = Väntar på att enhet ska acceptera...
-device-not-paired = Enheten är inte parad
-device-offline = Enhet är offline
 
 # Inställningssida
 settings-sms-section = SMS meddelanden
@@ -118,7 +97,6 @@ missed-call-from = Missat samtal från { $name }
 settings-file-notifications = Filaviseringar
 
 # Filmeddelandetext
-file-received = Fil mottagen
 file-received-from = Fil mottagen från { $device }
 
 # SMS/Meddelanden
@@ -129,8 +107,6 @@ loading-requesting = Hämtar från telefon...
 no-conversations = Inga konversationer
 loading-messages = Laddar meddelanden...
 no-messages = Inga meddelanden
-no-messages-conversation = Inga meddelanden i den här konversationen
-sms-will-appear = SMS-meddelanden kommer att visas här
 loading-older = Laddar...
 load-older = Ladda äldre meddelanden
 syncing = Synkroniserar med telefonen...
@@ -154,29 +130,16 @@ start-playing = Börja spela musik på din telefon
 media-not-available = Mediekontroller är inte tillgängliga
 enable-mpris = Se till att MPRIS-pluginet är aktiverat
 player = Spelare:
-volume = Volym
-no-track-playing = Inget spår spelas
 
 # Dela dialogruta
 share-text-placeholder = Ange text eller URL att dela...
-or-type-text = Eller skriv text...
 
 # Aviseringar
 dismiss = Avfärda
-no-notifications = Inga aviseringar
 
 # Fel och status
-ping-sent = Ping skickat!
-ping-failed = Misslyckades med att skicka ping
-share-complete = Delning är slutförd
-share-failed = Misslyckades att dela
-clipboard-sent = Urklipp skickat!
-clipboard-failed = Misslyckades med att skicka urklipp
 sms-sent = Meddelande skickat!
 sms-failed = Misslyckades med att skicka meddelande
-pairing-accepted = Parkoppling accepterad
-pairing-rejected = Parkoppling avvisad
-unpaired = Avparad från enhet
 
 # Daemon-fel
 daemon-unreachable = Kan inte ansluta till KDE Connect

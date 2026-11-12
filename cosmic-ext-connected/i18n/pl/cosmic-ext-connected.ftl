@@ -9,47 +9,30 @@ error = Błąd
 unknown = Nieznane
 device = Urządzenie
 devices = Urządzenia
-actions = Akcje
 refresh = Odśwież
 retry = Ponów
 
 # Device list
 no-devices = Brak urządzeń
 no-devices-hint = Upewnij się, że urządzenia są wykrywalne.
-loading-devices = Ładowanie urządzeń...
 
 # Device status
 paired = Sparowane
 not-paired = Nie sprawone
 connected = Połączone
-online = W sieci
 offline = Poza siecią
-available = Dostępne
-discovered = Wykryte
-battery = Bateria
-battery-level = { $level }%
-charging = ładowanie
 
 pairing-request = Prośba o sparowanie
 pairing = Parowanie...
-connected-paired = Połączono i sparowano
-paired-offline = Sparowano (poza siecią)
-visible-not-paired = Widoczne ale nie sparowane
-pairing-requested-by-device = Prośba o sparowanie od urządzenia
-pairing-request-sent = Wysłano prośbę o sparowanie...
 pairing-failed = Parowanie nieudane: { $error }
 
 # Device actions
-ping = Ping
 send-ping = Wyślij ping
-share = Udostępnij
 share-file = Udostępnij plik
 share-clipboard = Wyślij schowek
 share-text = Udostępnij tekst
 send-text = Wyślij tekst
-sms = SMS
 sms-messages = Wiadomości SMS
-messages = Wiadomości
 media = Media
 media-controls = Sterowanie mediami
 notifications = Powiadomienia
@@ -70,12 +53,8 @@ unpair-offline-note = To urządzenie jest poza siecią. Odparowanie zadziałało
 accept = Akceptuj
 reject = Odrzuć
 cancel = Anuluj
-pair-request-received = Otrzymano prośbę o sparowanie od { $device }
-pair-request-sent = Wysłano prośbę o sparowanie
 device-wants-to-pair = To urządznie chce się z tobą sparować
 waiting-for-device = Oczekiwanie na zakceptowanie przez urządzenie...
-device-not-paired = Urządzenie nie jest sparowane
-device-offline = Urządzenie jest poza siecią
 
 # Device type captions (shown under device name on device page)
 device-type-phone = Telefon
@@ -117,7 +96,6 @@ settings-file-section = Transfery plików
 settings-file-notifications = Pokaż powiadomienia
 
 # File Notification text
-file-received = Odebrano plik
 file-received-from = Odebrano plik od { $device }
 
 # SMS/Messages
@@ -128,8 +106,6 @@ loading-requesting = Pobieranie z telefonu...
 no-conversations = Brak rozmów
 loading-messages = Ładowanie wiadomości...
 no-messages = Brak wiadomości
-no-messages-conversation = Brak wiadomości w tej rozmowie
-sms-will-appear = Wiadomości SMS pojawią się tutaj
 loading-older = Ładowanie...
 load-older = Załaduj wcześniejsze wiadomości
 syncing = Synchronizowanie z telefonem...
@@ -153,29 +129,16 @@ start-playing = Zacznij odtwarzać muzykę na swoim telefonie
 media-not-available = Sterowanie mediami niedostępne
 enable-mpris = Upewnij się że plugin MPRIS jest włączony
 player = Odtwarzacz:
-volume = Głośność
-no-track-playing = Nie odtwarza utworu
 
 # Share dialog
 share-text-placeholder = Wpisz tekst lub adres URL do udostępnienia...
-or-type-text = Lub wpisz tekst...
 
 # Notifications
 dismiss = Odrzuć
-no-notifications = Brak powiadomień
 
 # Errors and status
-ping-sent = Wysłano ping!
-ping-failed = Nie udało się wysłać pinga
-share-complete = Udostępnianie ukończone
-share-failed = Nie udało się udostępnić
-clipboard-sent = Wysłano schowek!
-clipboard-failed = Nie udało się wysłać schowka
 sms-sent = Wiadomość wysłana!
 sms-failed = Nie udało się wysłać wiadomości
-pairing-accepted = Parowanie zaakceptowane
-pairing-rejected = Parowanie odrzucone
-unpaired = Odparowano od urządzenia
 
 # Daemon errors
 daemon-unreachable = Nie udało połączyć się z KDE Connect

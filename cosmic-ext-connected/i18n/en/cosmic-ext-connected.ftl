@@ -9,47 +9,30 @@ error = Error
 unknown = Unknown
 device = Device
 devices = Devices
-actions = Actions
 refresh = Refresh
 retry = Retry
 
 # Device list
 no-devices = No devices
 no-devices-hint = Make sure your devices are discoverable
-loading-devices = Loading devices...
 
 # Device status
 paired = Paired
 not-paired = Not paired
 connected = Connected
-online = Online
 offline = Offline
-available = Available
-discovered = Discovered
-battery = Battery
-battery-level = { $level }%
-charging = charging
 
 pairing-request = Pairing request
 pairing = Pairing...
-connected-paired = Connected and paired
-paired-offline = Paired (offline)
-visible-not-paired = Visible but not paired
-pairing-requested-by-device = Pairing requested by device
-pairing-request-sent = Pairing request sent...
 pairing-failed = Pairing failed: { $error }
 
 # Device actions
-ping = Ping
 send-ping = Send Ping
-share = Share
 share-file = Share File
 share-clipboard = Send Clipboard
 share-text = Share Text
 send-text = Send Text
-sms = SMS
 sms-messages = SMS Messages
-messages = Messages
 media = Media
 media-controls = Media Controls
 notifications = Notifications
@@ -70,12 +53,8 @@ unpair-offline-note = This device is offline. Unpairing takes effect now on your
 accept = Accept
 reject = Reject
 cancel = Cancel
-pair-request-received = Pair request received from { $device }
-pair-request-sent = Pair request sent
 device-wants-to-pair = This device wants to pair with you
 waiting-for-device = Waiting for device to accept...
-device-not-paired = Device is not paired
-device-offline = Device is offline
 
 # Device type captions (shown under device name on device page)
 device-type-phone = Phone
@@ -117,7 +96,6 @@ settings-file-section = File transfers
 settings-file-notifications = Show notifications
 
 # File Notification text
-file-received = File Received
 file-received-from = File received from { $device }
 
 # SMS/Messages
@@ -128,8 +106,6 @@ loading-requesting = Fetching from phone...
 no-conversations = No conversations
 loading-messages = Loading messages...
 no-messages = No messages
-no-messages-conversation = No messages in this conversation
-sms-will-appear = SMS messages will appear here
 loading-older = Loading...
 load-older = Load older messages
 syncing = Syncing with phone...
@@ -153,29 +129,16 @@ start-playing = Start playing music on your phone
 media-not-available = Media controls not available
 enable-mpris = Make sure the MPRIS plugin is enabled
 player = Player:
-volume = Volume
-no-track-playing = No track playing
 
 # Share dialog
 share-text-placeholder = Enter text or URL to share...
-or-type-text = Or type text...
 
 # Notifications
 dismiss = Dismiss
-no-notifications = No notifications
 
 # Errors and status
-ping-sent = Ping sent!
-ping-failed = Failed to send ping
-share-complete = Share complete
-share-failed = Failed to share
-clipboard-sent = Clipboard sent!
-clipboard-failed = Failed to send clipboard
 sms-sent = Message sent!
 sms-failed = Failed to send message
-pairing-accepted = Pairing accepted
-pairing-rejected = Pairing rejected
-unpaired = Unpaired from device
 
 # Daemon errors
 daemon-unreachable = Cannot connect to KDE Connect
