@@ -11,10 +11,7 @@ use zbus::Connection;
 /// Convert a picked file path into the daemon's expected `attachmentUrls` element
 fn attachment_value(path: &std::path::Path) -> Result<Value<'static>, String> {
     if !path.is_file() || std::fs::File::open(path).is_err() {
-        tracing::warn!(
-            "attachment missing or unreadable at send: {}",
-            path.display()
-        );
+        tracing::warn!("attachment missing or unreadable at send");
         return Err(fl!("attachment-missing"));
     }
     let s = path.to_str().ok_or_else(|| fl!("attachment-missing"))?;
