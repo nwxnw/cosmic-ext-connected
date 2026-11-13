@@ -82,12 +82,7 @@ Captured 2026-07-26 against kdeconnect 23.08.5 on a self-thread. Most sends on t
 
 ## Text Sent with a Photo Is Missing
 
-When a photo is sent or received with text, Connected may show the photo but not the text. The phone stores the photo and its text as two messages with the same timestamp, and KDE Connect's desktop daemon keeps only one message per timestamp in a conversation. The text is dropped before it reaches any desktop client. This is a KDE Connect bug, not an applet bug
-
-### Symptoms
-- A photo with a caption appears in Connected without its caption
-- The phone's message app show both
-- Text-only messages are unaffected
+When a photo is sent or received with text, Connected may show the photo but not the text. The phone stores the photo and its text as two messages with the same timestamp, and KDE Connect's desktop daemon keeps only one message per timestamp in a conversation. The text is dropped before it reaches any desktop client. This is a KDE Connect bug, not an applet bug. It is fixed in KDE Connect 26.12 ([KDE bug 528719](https://bugs.kde.org/show_bug.cgi?id=528719)).
 
 Captured 2026-10-18 against kdeconnectd 23.08.5 with Google Messages on a Galaxy S24.
 
