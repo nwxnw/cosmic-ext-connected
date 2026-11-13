@@ -285,6 +285,16 @@ fn send_status_row<'a>(reply_send: &ReplySend) -> Option<Element<'a, Message>> {
     )
 }
 
+/// Display name for a conversation's addresses; "Unknown" when there is none to show
+fn group_name(contacts: &ContactLookup, addresses: &[String]) -> String {
+    let name = contacts.get_group_display_name(addresses, 3);
+    if name.is_empty() {
+        fl!("unknown")
+    } else {
+        name
+    }
+}
+
 // --- View params and functions ---
 
 /// Parameters for the conversation list view.
@@ -392,7 +402,7 @@ pub fn view_conversation_list(params: ConversationListParams<'_>) -> Element<'_,
         // Build conversation list (limited to conversations_displayed)
         let mut conv_column = column![].spacing(sp.space_xxxs);
         for conv in params.conversations.iter() {
-            let display_name = params.contacts.get_group_display_name(&conv.addresses, 3);
+            let display_name = group_name(params.contacts, &conv.addresses);
             let date_str = format_timestamp(conv.last_message_timestamp);
 
             // Build snippet: show attachment indicator if needed
@@ -538,10 +548,7 @@ fn compose_key_binding(
 /// Render the SMS message thread view.
 pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Message> {
     let sp = cosmic::theme::spacing();
-    let display_name = match params.thread_addresses {
-        Some(addrs) => params.contacts.get_group_display_name(addrs, 3),
-        None => fl!("unknown"),
-    };
+    let display_name = group_name(params.contacts, params.thread_addresses.unwrap_or(&[]));
 
     // Build header with optional sync indicator
     let mut header_row = row![

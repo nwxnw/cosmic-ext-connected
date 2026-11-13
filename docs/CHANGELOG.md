@@ -9,6 +9,7 @@
 ### Fixed
 - With two Share File choosers open at once, the first file picked is sent to the device you chose it for, not to the device of the later chooser.
 - A reply sent just before switching conversations no longer appears in the conversation you switched to.
+- Replying in a conversation with yourself no longer goes nowhere when its latest message is a photo or file. If no earlier text message is loaded, Connected says it has no recipient instead.
 
 ## [0.9.0] - 2026-10-24
 Photos and files can now be attached to SMS messages, and conversations load, scroll and reply more reliably.

@@ -1525,7 +1525,11 @@ impl SmsConversationStore {
                                         contacts.get_group_display_name(&addresses, 3)
                                     }
                                 };
-                                fl!("sms-notification-title-from", sender = sender_name)
+                                if sender_name.is_empty() {
+                                    fl!("sms-notification-title")
+                                } else {
+                                    fl!("sms-notification-title-from", sender = sender_name)
+                                }
                             } else {
                                 fl!("sms-notification-title")
                             };

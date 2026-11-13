@@ -182,7 +182,9 @@ Replies call `sendSms(addresses, message, attachments, subID)` on the SMS plugin
 Connected selects (`reply_recipients`, see "Recipient rule" above) and the reference message's `subID`. Connected does 
 not use `replyToConversation`: it resolves recipients from the oldest message in the daemon's in-memory cache, which was 
 the wrong set for 20 of 100 recent threads (D.63), and on a pre-`26.08.0` daemon it needs that cache primed. If no message
-or conversation address is available, Connected shows a status and sends nothing.
+or conversation address is available, Connected shows a status and sends nothing. Android strips the user's own number
+from MMS rows, so in a conversation with yourself an MMS carries no address and the recipient comes from the newest
+SMS row on the page.
 
 On `Ok` the draft and staged attachment clear, and a caption under the compose box reads "Sending..." until the phone's sent copy arrives on the thread's long-lived message subscription. Nothing is added to the thread locally: the echo is the only copy of a sent message, so the thread shows only what the daemon reports. Send is disabled only while the D-Bus call is in flight, so an unechoed MMS does not block the next send.
 

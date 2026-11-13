@@ -142,6 +142,7 @@ pub struct SmsMessage {
     pub body: String,
     /// Phone numbers/addresses of all participants (for group messages).
     /// For 1-on-1 conversations this will have one element.
+    /// Empty when the phone reported none (a self-thread MMS).
     pub addresses: Vec<String>,
     /// Unix timestamp in milliseconds.
     pub date: i64,
@@ -253,33 +254,23 @@ pub fn parse_sms_message(value: &OwnedValue) -> Option<SmsMessage> {
         .and_then(get_string_from_value)
         .unwrap_or_default();
 
-    // Field 2: addresses (array of structs containing string)
-    // Extract ALL addresses for group message support
-    let addresses: Vec<String> = fields
-        .get(2)
-        .and_then(|v| {
-            if let Value::Array(arr) = v {
-                let addrs: Vec<String> = arr
-                    .iter()
-                    .filter_map(|addr_struct| {
-                        // Each address is a struct with a single string field
-                        if let Value::Structure(s) = addr_struct {
-                            s.fields().first().and_then(get_string_from_value)
-                        } else {
-                            get_string_from_value(addr_struct)
-                        }
-                    })
-                    .collect();
-                if addrs.is_empty() {
-                    None
+    // Field 2: addresses (array of structs containing string). Empty when the
+    // phone reported none: Android strips the user's own number from MMS rows,
+    // so a self-thread MMS has no address at all.
+    let addresses: Vec<String> = match fields.get(2) {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|addr_struct| {
+                // Each address is a struct with a single string field
+                if let Value::Structure(s) = addr_struct {
+                    s.fields().first().and_then(get_string_from_value)
                 } else {
-                    Some(addrs)
+                    get_string_from_value(addr_struct)
                 }
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| vec!["Unknown".to_string()]);
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
 
     // Field 3: date (i64)
     let date = fields.get(3).and_then(get_i64_from_value).unwrap_or(0);
