@@ -3,7 +3,7 @@
 use crate::app::{LoadingPhase, Message, SettingKey, SmsLoadingState};
 use crate::fl;
 use crate::sms::logical::LogicalConversation;
-use crate::sms::StagedAttachment;
+use crate::sms::{ReplySend, StagedAttachment};
 use crate::ui::widgets::warning_style;
 use crate::views::helpers::format_timestamp;
 use base64::Engine;
@@ -14,9 +14,7 @@ use cosmic::iced::{Alignment, ContentFit, Length};
 use cosmic::widget::{self, text};
 use cosmic::Element;
 use kdeconnect_dbus::contacts::ContactLookup;
-use kdeconnect_dbus::plugins::{
-    is_address_valid, Attachment, MessageType, SmsMessage, OPTIMISTIC_MESSAGE_UID,
-};
+use kdeconnect_dbus::plugins::{is_address_valid, Attachment, MessageType, SmsMessage};
 
 // --- Helper functions for loading state ---
 
@@ -155,6 +153,26 @@ fn view_attachment<'a>(
 /// Longest filename shown on the chip; the full name and path are in its tooltip.
 const CHIP_NAME_CHARS: usize = 25;
 
+/// Longest excerpt of an unconfirmed reply shown under the compose box.
+const SEND_EXCERPT_CHARS: usize = 30;
+
+/// First non-empty line of a sent body, trimmed and cut at `SEND_EXCERPT_CHARS`
+/// characters with `…` appended when cut. Empty when the body has no text.
+fn send_excerpt(body: &str) -> String {
+    let line = body
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let mut chars = line.chars();
+    let head: String = chars.by_ref().take(SEND_EXCERPT_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{}…", head.trim_end())
+    } else {
+        head
+    }
+}
+
 /// Middle-truncate to `max` characters, keeping the extension visible.
 fn middle_truncate(s: &str, max: usize) -> String {
     let n = s.chars().count();
@@ -232,6 +250,39 @@ fn attachment_control<'a>(
     .spacing(sp.space_xxxs)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// Caption under the compose box for the last reply's send status; `None` when idle.
+fn send_status_row<'a>(reply_send: &ReplySend) -> Option<Element<'a, Message>> {
+    let sp = cosmic::theme::spacing();
+    let (glyph, label) = match reply_send {
+        ReplySend::Idle => return None,
+        ReplySend::Dispatching { .. } | ReplySend::AwaitingEcho { .. } => (
+            "emblem-synchronizing-symbolic",
+            text::caption(fl!("sending")),
+        ),
+        ReplySend::Unconfirmed { body } => {
+            let excerpt = send_excerpt(body);
+            let msg = if excerpt.is_empty() {
+                fl!("sms-not-confirmed")
+            } else {
+                fl!("sms-not-confirmed-excerpt", excerpt = excerpt)
+            };
+            (
+                "dialog-warning-symbolic",
+                text::caption(msg).class(cosmic::theme::Text::Custom(warning_style)),
+            )
+        }
+    };
+    Some(
+        row![
+            widget::icon::from_name(glyph).size(12),
+            label.wrapping(cosmic::iced::widget::text::Wrapping::Word),
+        ]
+        .spacing(sp.space_xxxs)
+        .align_y(Alignment::Center)
+        .into(),
+    )
 }
 
 // --- View params and functions ---
@@ -455,7 +506,7 @@ pub struct MessageThreadParams<'a> {
     pub contacts: &'a ContactLookup,
     pub loading_state: &'a SmsLoadingState,
     pub sms_compose_text: &'a widget::text_editor::Content,
-    pub sms_sending: bool,
+    pub reply_send: &'a ReplySend,
     /// Whether incremental loading is active (syncing messages from phone)
     pub sync_active: bool,
     /// UID of message bubble currently being pressed (for visual feedback)
@@ -590,19 +641,7 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
                 );
             }
 
-            let is_pending = msg.uid == OPTIMISTIC_MESSAGE_UID;
-            if is_pending {
-                bubble_content = bubble_content.push(
-                    row![
-                        widget::icon::from_name("emblem-synchronizing-symbolic").size(12),
-                        text::caption(fl!("sending")),
-                    ]
-                    .spacing(sp.space_xxxs)
-                    .align_y(Alignment::Center),
-                );
-            } else {
-                bubble_content = bubble_content.push(text::caption(time_str));
-            }
+            bubble_content = bubble_content.push(text::caption(time_str));
 
             // Use highlighted style when pressed for high contrast visual feedback
             let bubble: Element<Message> = if is_pressed {
@@ -698,14 +737,14 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
         .pending_attachment
         .is_some_and(|a| a.too_large(&text));
 
-    let send_btn: Element<Message> = if params.sms_sending {
+    let send_btn: Element<Message> = if params.reply_send.is_dispatching() {
         widget::button::standard(fl!("sending"))
             .leading_icon(widget::icon::from_name("process-working-symbolic").size(16))
             .into()
     } else {
         let can_send = (!text.trim().is_empty() || params.pending_attachment.is_some())
             && !too_large
-            && !params.sms_sending;
+            && !params.reply_send.is_dispatching();
         widget::button::suggested(fl!("send"))
             .leading_icon(widget::icon::from_name("mail-send-symbolic").size(16))
             .on_press_maybe(if can_send {
@@ -723,7 +762,7 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
                 attachment_control(
                     params.pending_attachment,
                     too_large,
-                    params.sms_sending,
+                    params.reply_send.is_dispatching(),
                     Message::AttachToSms,
                     Message::ClearSmsAttachment,
                 ),
@@ -733,6 +772,7 @@ pub fn view_message_thread(params: MessageThreadParams<'_>) -> Element<'_, Messa
             .spacing(sp.space_xxs)
             .align_y(Alignment::Center),
         ]
+        .push_maybe(send_status_row(params.reply_send))
         .spacing(sp.space_xxs),
     );
 
@@ -955,4 +995,32 @@ pub fn view_new_message(params: NewMessageParams<'_>) -> Element<'_, Message> {
     .spacing(sp.space_xxxs)
     .width(Length::Fill)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::send_excerpt;
+
+    #[test]
+    fn send_excerpt_cuts_by_characters() {
+        let body = "é".repeat(31);
+        assert_eq!(send_excerpt(&body), format!("{}…", "é".repeat(30)));
+    }
+
+    #[test]
+    fn send_excerpt_takes_first_line() {
+        assert_eq!(send_excerpt("  See you at 6\nBring cake"), "See you at 6");
+    }
+
+    #[test]
+    fn send_excerpt_keeps_exactly_thirty() {
+        let body = "a".repeat(30);
+        assert_eq!(send_excerpt(&body), body);
+    }
+
+    #[test]
+    fn send_excerpt_empty_body() {
+        assert_eq!(send_excerpt(""), "");
+        assert_eq!(send_excerpt("  \n  "), "");
+    }
 }

@@ -1,11 +1,13 @@
 //! `SmsConversationStore` — owns SMS conversation state, message caches,
-//! subscription orchestration, optimistic-send state, contacts, and SMS
+//! subscription orchestration, reply send state, contacts, and SMS
 //! notification dedup.
 
 use crate::app::{LoadingPhase, Message, SmsLoadingState};
 use crate::config::Config;
 use crate::constants::notifications::NORMAL_NOTIFICATION_TIMEOUT_MS;
-use crate::constants::sms::{MESSAGES_PER_PAGE, MMS_MAX_BYTES, NEW_MESSAGE_SYNC_INDICATOR_SECS};
+use crate::constants::sms::{
+    MESSAGES_PER_PAGE, MMS_MAX_BYTES, NEW_MESSAGE_SYNC_INDICATOR_SECS, SEND_ECHO_WINDOW_SECS,
+};
 use crate::fl;
 use crate::sms::logical::{merge_into_logical, split_candidate_thread_ids, LogicalConversation};
 use crate::sms::{
@@ -19,9 +21,7 @@ use cosmic::iced::{clipboard, Subscription};
 use cosmic::widget;
 use cosmic::Element;
 use kdeconnect_dbus::contacts::ContactLookup;
-use kdeconnect_dbus::plugins::{
-    is_address_valid, ConversationSummary, MessageType, SmsMessage, OPTIMISTIC_MESSAGE_UID,
-};
+use kdeconnect_dbus::plugins::{is_address_valid, ConversationSummary, MessageType, SmsMessage};
 use kdeconnect_dbus::{dedupe_addresses, normalize_phone_number, phone_suffix};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -62,8 +62,8 @@ pub enum SmsReply {
     /// Set or clear `status_message` directly without auto-clear.
     /// Used for sticky "Loading…" indicators that pair with explicit clear.
     SetStatus(Option<String>),
-    /// New-message send succeeded: set status_message + return to ConversationList.
-    NewMessageSent(String),
+    /// New-message send accepted by the daemon: return to ConversationList.
+    NewMessageSent,
     /// No app-level state change required.
     NoOp,
 }
@@ -142,6 +142,34 @@ fn display_floor(
         .max()
 }
 
+/// Status of the last reply sent from the open thread's composer.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum ReplySend {
+    #[default]
+    Idle,
+    /// `sendSms` in flight; Send disabled
+    Dispatching { body: String },
+    /// Daemon accepted; waiting for the phone's sent copy
+    AwaitingEcho { body: String, generation: u64 },
+    /// Window passed with no echo; a late echo still clears it
+    Unconfirmed { body: String },
+}
+
+impl ReplySend {
+    pub(crate) fn body(&self) -> Option<&str> {
+        match self {
+            ReplySend::Idle => None,
+            ReplySend::Dispatching { body }
+            | ReplySend::AwaitingEcho { body, .. }
+            | ReplySend::Unconfirmed { body } => Some(body),
+        }
+    }
+
+    pub(crate) fn is_dispatching(&self) -> bool {
+        matches!(self, ReplySend::Dispatching { .. })
+    }
+}
+
 pub struct SmsConversationStore {
     // Active SMS device
     pub(crate) sms_device_id: Option<String>,
@@ -181,8 +209,9 @@ pub struct SmsConversationStore {
 
     // Reply compose / send
     pub(crate) sms_compose_text: widget::text_editor::Content,
-    pub(crate) sms_sending: bool,
-    pub(crate) sms_sending_body: Option<String>,
+    pub(crate) reply_send: ReplySend,
+    /// Bumped per accepted send; tags the echo-window timer so a stale one is ignored
+    pub(crate) reply_send_generation: u64,
 
     // Message pagination / scroll preservation
     pub(crate) messages_has_more: bool,
@@ -236,8 +265,8 @@ impl SmsConversationStore {
             contacts: ContactLookup::default(),
             pending_attachment: None,
             sms_compose_text: widget::text_editor::Content::new(),
-            sms_sending: false,
-            sms_sending_body: None,
+            reply_send: ReplySend::Idle,
+            reply_send_generation: 0,
             messages_has_more: true,
             older_page: None,
             thread_has_more: HashMap::new(),
@@ -505,7 +534,6 @@ impl SmsConversationStore {
         let newest_addressed = self
             .messages
             .iter()
-            .filter(|m| m.uid != OPTIMISTIC_MESSAGE_UID)
             .filter_map(|m| {
                 let addrs = dedupe_addresses(&m.addresses);
                 (!addrs.is_empty()).then_some((m.date, addrs, m.sub_id))
@@ -938,40 +966,6 @@ impl SmsConversationStore {
                     *load.served.entry(message.thread_id).or_insert(0) += 1;
                 }
 
-                // Reconcile optimistic message: if this incoming sent message
-                // matches our optimistic insert's body within a 5-minute window,
-                // upgrade the optimistic entry in-place instead of inserting a duplicate.
-                if message.uid != OPTIMISTIC_MESSAGE_UID
-                    && message.message_type == MessageType::Sent
-                {
-                    if let Some(pos) = self.messages.iter().position(|m| {
-                        m.uid == OPTIMISTIC_MESSAGE_UID
-                            && m.message_type == MessageType::Sent
-                            && m.body == message.body
-                            && (message.date - m.date).unsigned_abs() < 300_000
-                    }) {
-                        tracing::info!(
-                            "Reconciling optimistic message with real uid={}",
-                            message.uid
-                        );
-                        self.messages[pos].uid = message.uid;
-                        self.messages[pos].date = message.date;
-                        // The optimistic entry was inserted without attachments (we do not build a
-                        // local preview); the phone's echo is the authoritative copy, so adopt its
-                        // attachment list. Without this an attachment send reconciles cleanly and
-                        // then renders forever without its image.
-                        self.messages[pos].attachments = message.attachments.clone();
-                        self.known_message_ids.remove(&OPTIMISTIC_MESSAGE_UID);
-                        self.known_message_ids.insert(message.uid);
-                        self.sms_sending_body = None;
-                        return (
-                            self.try_settle(message_thread_id)
-                                .unwrap_or_else(cosmic::app::Task::none),
-                            SmsReply::NoOp,
-                        );
-                    }
-                }
-
                 // Deduplication: skip if already have this message
                 if self.known_message_ids.contains(&message.uid) {
                     tracing::debug!(
@@ -987,21 +981,23 @@ impl SmsConversationStore {
                 }
                 self.known_message_ids.insert(message.uid);
 
-                // Check if this confirms our pending sent message
-                let confirmed_send = self.sms_sending_body.is_some()
-                    && message.message_type == MessageType::Sent
-                    && self.sms_sending_body.as_deref() == Some(message.body.as_str());
-                if confirmed_send {
-                    tracing::info!("Confirmed delivery of sent message uid={}", message.uid);
-                    self.sms_sending_body = None;
-                }
-
-                // Insert message in sorted order by date
+                // Insert position in date order; at the end means newest in the thread.
                 let insert_pos = self
                     .messages
                     .iter()
                     .position(|m| m.date > message.date)
                     .unwrap_or(self.messages.len());
+
+                // The phone's sent copy of the reply awaiting it. Newest-in-thread stops an older
+                // sent message with the same body (Load older, initial load) from matching.
+                let confirmed_send = message.message_type == MessageType::Sent
+                    && self.reply_send.body() == Some(message.body.as_str())
+                    && insert_pos == self.messages.len();
+                if confirmed_send {
+                    tracing::info!("Phone recorded the sent reply as uid={}", message.uid);
+                    self.reply_send = ReplySend::Idle;
+                }
+
                 self.messages.insert(insert_pos, message);
                 if let Some(load) = self.older_page.as_mut() {
                     *load.new.entry(message_thread_id).or_insert(0) += 1;
@@ -1269,7 +1265,7 @@ impl SmsConversationStore {
                     self.sms_device_id,
                     self.current_thread_id,
                     self.sms_compose_text.text().trim().is_empty(),
-                    self.sms_sending
+                    self.reply_send.is_dispatching(),
                 );
                 if let (Some(conn), Some(device_id), Some(thread_id)) = (
                     ctx.conn,
@@ -1283,7 +1279,7 @@ impl SmsConversationStore {
                         .pending_attachment
                         .as_ref()
                         .is_some_and(|a| a.too_large(&message_text));
-                    if has_content && !too_large && !self.sms_sending {
+                    if has_content && !too_large && !self.reply_send.is_dispatching() {
                         let Some((addresses, sub_id)) = self.reply_recipients(thread_id) else {
                             tracing::warn!("No recipient for thread {}; nothing sent", thread_id);
                             return (
@@ -1291,8 +1287,9 @@ impl SmsConversationStore {
                                 SmsReply::Status(fl!("reply-no-recipient")),
                             );
                         };
-                        self.sms_sending = true;
-                        self.sms_sending_body = Some(message_text.clone());
+                        self.reply_send = ReplySend::Dispatching {
+                            body: message_text.clone(),
+                        };
                         tracing::info!(
                             "Dispatching sendSms for thread {} to {} recipient(s), sub_id {}",
                             thread_id,
@@ -1304,6 +1301,7 @@ impl SmsConversationStore {
                                 send_sms_async(
                                     conn.clone(),
                                     device_id.clone(),
+                                    thread_id,
                                     addresses,
                                     sub_id,
                                     message_text,
@@ -1318,7 +1316,7 @@ impl SmsConversationStore {
                             "SendSms conditions not met: text_empty={}, has_attachment={}, sending={}, too_large={}",
                             message_text.trim().is_empty(),
                             self.pending_attachment.is_some(),
-                            self.sms_sending,
+                            self.reply_send.is_dispatching(),
                             too_large
                         );
                     }
@@ -1327,74 +1325,81 @@ impl SmsConversationStore {
                 }
                 (cosmic::app::Task::none(), SmsReply::NoOp)
             }
-            Message::SmsSendResult(result) => {
-                self.sms_sending = false;
+            Message::SmsSendResult((device_id, thread_id), result) => {
+                // A result for a thread the composer has left (Back, another thread,
+                // device closed) must not touch the state that now belongs to the open one.
+                let for_open_thread = self.sms_device_id.as_deref() == Some(device_id.as_str())
+                    && self.current_thread_id == Some(thread_id);
+                if !for_open_thread {
+                    return match result {
+                        Ok(()) => {
+                            tracing::debug!(
+                                "Send result for thread {} after it closed; ignored",
+                                thread_id
+                            );
+                            (cosmic::app::Task::none(), SmsReply::NoOp)
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                "SMS send error for closed thread {}: {}",
+                                thread_id,
+                                err
+                            );
+                            let status = format!("{}: {}", fl!("sms-failed"), err);
+                            (cosmic::app::Task::none(), SmsReply::Status(status))
+                        }
+                    };
+                }
+
                 match result {
-                    Ok(sent_body) => {
-                        tracing::debug!("SMS sent successfully");
+                    Ok(()) => {
                         self.sms_compose_text = widget::text_editor::Content::new();
                         self.pending_attachment = None;
-                        if let Some(thread_id) = self.current_thread_id {
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as i64)
-                                .unwrap_or(0);
-
-                            // Insert optimistic message if echo hasn't already arrived.
-                            // sms_sending_body is cleared by confirmed_send in
-                            // ConversationMessageReceived if the echo arrived before
-                            // SmsSendResult — skip to avoid duplicate.
-                            if self.sms_sending_body.is_some() {
-                                // Source sub_id from the LogicalConversation
-                                // populated at fetch time. The value is the
-                                // same SIM property; sourcing it here closes
-                                // the pre-first-message window where the
-                                // optimistic stamp would have fallen back to -1.
-                                let sub_id = self
-                                    .logical_for(thread_id)
-                                    .map(|lc| lc.subscription_id)
-                                    .unwrap_or(-1);
-                                let optimistic = SmsMessage {
-                                    body: sent_body,
-                                    addresses: self
-                                        .current_thread_addresses
-                                        .clone()
-                                        .unwrap_or_default(),
-                                    date: now_ms,
-                                    message_type: MessageType::Sent,
-                                    read: true,
-                                    thread_id,
-                                    uid: OPTIMISTIC_MESSAGE_UID,
-                                    sub_id,
-                                    attachments: vec![],
-                                };
-                                self.messages.push(optimistic);
-                                self.known_message_ids.insert(OPTIMISTIC_MESSAGE_UID);
-                                self.sms_sending_body = None;
-
-                                // No subscription restart needed — the message subscription
-                                // runs as long as the thread is open and will catch the
-                                // phone's echo naturally for optimistic reconciliation.
-
+                        match std::mem::take(&mut self.reply_send) {
+                            ReplySend::Dispatching { body } => {
+                                self.reply_send_generation += 1;
+                                let generation = self.reply_send_generation;
+                                self.reply_send = ReplySend::AwaitingEcho { body, generation };
                                 return (
-                                    scrollable::snap_to(
-                                        widget::Id::new("message-thread"),
-                                        scrollable::RelativeOffset::START.into(),
+                                    cosmic::app::Task::perform(
+                                        async move {
+                                            tokio::time::sleep(std::time::Duration::from_secs(
+                                                SEND_ECHO_WINDOW_SECS,
+                                            ))
+                                            .await;
+                                            Message::SendEchoWindowElapsed(generation)
+                                        },
+                                        cosmic::Action::App,
                                     ),
                                     SmsReply::NoOp,
                                 );
                             }
+                            // Idle: the echo arrived before this result and already cleared it
+                            other => self.reply_send = other,
                         }
-
-                        (cosmic::app::Task::none(), SmsReply::Status(fl!("sms-sent")))
+                        (cosmic::app::Task::none(), SmsReply::NoOp)
                     }
                     Err(err) => {
                         tracing::error!("SMS send error: {}", err);
-                        self.sms_sending_body = None;
+                        self.reply_send = ReplySend::Idle;
                         let status = format!("{}: {}", fl!("sms-failed"), err);
                         (cosmic::app::Task::none(), SmsReply::Status(status))
                     }
                 }
+            }
+
+            Message::SendEchoWindowElapsed(fired) => {
+                match std::mem::take(&mut self.reply_send) {
+                    ReplySend::AwaitingEcho { body, generation } if generation == fired => {
+                        tracing::info!(
+                            "No sent copy from the phone within {} s; reply marked unconfirmed",
+                            SEND_ECHO_WINDOW_SECS
+                        );
+                        self.reply_send = ReplySend::Unconfirmed { body };
+                    }
+                    other => self.reply_send = other,
+                }
+                (cosmic::app::Task::none(), SmsReply::NoOp)
             }
 
             // Attachment messages
@@ -1686,10 +1691,9 @@ impl SmsConversationStore {
             Message::NewMessageSendResult(result) => {
                 self.new_message_sending = false;
                 match &result {
-                    Ok(msg) => {
-                        tracing::info!("New message send result: {}", msg);
+                    Ok(()) => {
+                        tracing::info!("New message accepted by the daemon");
                         // Clear fields and return to conversation list
-                        let success_msg = msg.clone();
                         self.new_message_recipients.clear();
                         self.new_message_recipient_input.clear();
                         self.new_message_pending_attachment = None;
@@ -1713,14 +1717,11 @@ impl SmsConversationStore {
                                 cosmic::Action::App,
                             );
                         }
-                        (settle_task, SmsReply::NewMessageSent(success_msg))
+                        (settle_task, SmsReply::NewMessageSent)
                     }
                     Err(err) => {
                         tracing::error!("New message send error: {}", err);
-                        (
-                            cosmic::app::Task::none(),
-                            SmsReply::Status(format!("Send failed: {}", err)),
-                        )
+                        (cosmic::app::Task::none(), SmsReply::NoOp)
                     }
                 }
             }
@@ -1765,7 +1766,7 @@ impl SmsConversationStore {
                     loading_state: &self.sms_loading_state,
                     sms_compose_text: &self.sms_compose_text,
                     pending_attachment: self.pending_attachment.as_ref(),
-                    sms_sending: self.sms_sending,
+                    reply_send: &self.reply_send,
                     sync_active: self.message_sync_active,
                     pressed_bubble_uid: self.pressed_bubble_uid,
                     show_copy_hint: self.show_copy_hint,
@@ -1975,19 +1976,6 @@ mod tests {
     fn test_reply_recipients_drops_phantom() {
         let mut store = SmsConversationStore::new();
         store.messages = vec![msg(1, 100, &["0001", "+15551234567"], 2)];
-        assert_eq!(
-            store.reply_recipients(1),
-            Some((addrs(&["+15551234567"]), 2))
-        );
-    }
-
-    #[test]
-    fn test_reply_recipients_skips_optimistic() {
-        let mut store = SmsConversationStore::new();
-        store.messages = vec![
-            msg(1, 100, &["+15551234567"], 2),
-            msg(OPTIMISTIC_MESSAGE_UID, 200, &["+15559876543"], 3),
-        ];
         assert_eq!(
             store.reply_recipients(1),
             Some((addrs(&["+15551234567"]), 2))

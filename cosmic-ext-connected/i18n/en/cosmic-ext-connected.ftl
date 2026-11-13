@@ -111,6 +111,8 @@ load-older = Load older messages
 syncing = Syncing with phone...
 syncing-conversations = Syncing conversations...
 hold-to-copy = Hold to copy
+sms-not-confirmed = Not confirmed by your phone
+sms-not-confirmed-excerpt = Not confirmed by your phone: "{ $excerpt }"
 
 # New message
 new-message = New Message
@@ -137,7 +139,6 @@ share-text-placeholder = Enter text or URL to share...
 dismiss = Dismiss
 
 # Errors and status
-sms-sent = Message sent!
 sms-failed = Failed to send message
 
 # Daemon errors

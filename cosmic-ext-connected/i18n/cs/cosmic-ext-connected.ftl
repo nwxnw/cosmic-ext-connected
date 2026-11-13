@@ -137,7 +137,6 @@ share-text-placeholder = Zadejte text nebo URL ke sdílení...
 dismiss = Zavřít
 
 # Errors and status
-sms-sent = Zpráva odeslána!
 sms-failed = Odeslání zprávy selhalo
 
 # Daemon errors

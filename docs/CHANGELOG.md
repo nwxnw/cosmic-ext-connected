@@ -4,9 +4,11 @@
 ### Changed
 - Older messages in a conversation load from the Load older button rather than automatically when you scroll to the top. This avoids a crash when the popup opens on a conversation.
 - Share File returns to the popup after the file chooser closes, as attaching a file to a message already does.
+- A reply appears in the conversation once your phone confirms it was sent. Until then a note under the reply box says it is sending, and changes to "Not confirmed by your phone" if the phone never confirms it.
 
 ### Fixed
 - With two Share File choosers open at once, the first file picked is sent to the device you chose it for, not to the device of the later chooser.
+- A reply sent just before switching conversations no longer appears in the conversation you switched to.
 
 ## [0.9.0] - 2026-10-24
 Photos and files can now be attached to SMS messages, and conversations load, scroll and reply more reliably.

@@ -16,7 +16,7 @@ use crate::media::{
     fetch_media_info_async, media_action_async, view_media_controls, MediaAction,
     MediaControlsParams,
 };
-use crate::sms::{prefetch_conversations_async, SmsConversationStore, SmsViewMode};
+use crate::sms::{prefetch_conversations_async, ReplySend, SmsConversationStore, SmsViewMode};
 use crate::subscriptions::{
     call_notification_subscription, dbus_signal_subscription, sms_notification_subscription,
 };
@@ -195,8 +195,10 @@ pub enum Message {
     ClearNewMessageAttachment,
     /// Send SMS in current thread
     SendSms,
-    /// SMS send operation completed
-    SmsSendResult(Result<String, String>),
+    /// A reply send finished; keyed by (device_id, thread_id) it was sent from
+    SmsSendResult((String, i64), Result<(), String>),
+    /// The echo window for the send with this generation has passed
+    SendEchoWindowElapsed(u64),
     /// Open new message compose view
     OpenNewMessage,
     /// Close new message view
@@ -218,7 +220,7 @@ pub enum Message {
         device_id: String,
     },
     /// New message send result
-    NewMessageSendResult(Result<String, String>),
+    NewMessageSendResult(Result<(), String>),
     /// Ack that an older-page `requestConversation` was fired (`ok`) or failed.
     /// Carries no messages - those stream in via `ConversationMessagesReceived`.
     OlderMessagesRequested {
@@ -646,9 +648,9 @@ impl ConnectApplet {
                 self.set_status(msg);
                 cosmic::app::Task::none()
             }
-            crate::sms::SmsReply::NewMessageSent(msg) => {
+            crate::sms::SmsReply::NewMessageSent => {
                 self.set_view(ViewMode::ConversationList);
-                self.set_transient_status(msg)
+                cosmic::app::Task::none()
             }
             crate::sms::SmsReply::SetStatus(None) => {
                 // An explicit clear by the store; no new status, so the generation stays.
@@ -1498,8 +1500,7 @@ impl Application for ConnectApplet {
                 self.sms.conversation_list_subscription_active = false;
                 self.sms.sms_compose_text = widget::text_editor::Content::new();
                 self.sms.pending_attachment = None;
-                self.sms.sms_sending = false;
-                self.sms.sms_sending_body = None;
+                self.sms.reply_send = ReplySend::Idle;
             }
             Message::OpenConversation(thread_id) => {
                 // Guard: need D-Bus connection and device ID for the subscription
@@ -1540,6 +1541,7 @@ impl Application for ConnectApplet {
                     // DevicesUpdated recovery reoloads the open thread and must keep the draft.
                     self.sms.sms_compose_text = widget::text_editor::Content::new();
                     self.sms.pending_attachment = None;
+                    self.sms.reply_send = ReplySend::Idle;
 
                     // The subscription fires the D-Bus request after setting up match rules
                     self.sms.conversation_load_active = true;
@@ -1563,8 +1565,7 @@ impl Application for ConnectApplet {
                 self.sms.reset_thread_state();
                 self.sms.sms_compose_text = widget::text_editor::Content::new();
                 self.sms.pending_attachment = None;
-                self.sms.sms_sending = false;
-                self.sms.sms_sending_body = None;
+                self.sms.reply_send = ReplySend::Idle;
                 self.sms.message_sync_active = false;
 
                 // Clear subscription-based loading state
@@ -1954,7 +1955,8 @@ impl Application for ConnectApplet {
             | Message::SmsError(_)
             | Message::SmsComposeAction(_)
             | Message::SendSms
-            | Message::SmsSendResult(_)
+            | Message::SmsSendResult(_, _)
+            | Message::SendEchoWindowElapsed(_)
             | Message::ClearSmsAttachment
             | Message::NewMessageRecipientInput(_)
             | Message::NewMessageBodyAction(_)

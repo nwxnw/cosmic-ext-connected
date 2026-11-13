@@ -161,10 +161,6 @@ pub struct SmsMessage {
     pub attachments: Vec<Attachment>,
 }
 
-/// Sentinel UID for optimistic messages that haven't been confirmed by the phone yet.
-/// Uses `i32::MIN` to avoid collision with any real Android message UID (positive `i32`).
-pub const OPTIMISTIC_MESSAGE_UID: i32 = i32::MIN;
-
 impl SmsMessage {
     /// Get the primary address (first participant) for display purposes.
     pub fn primary_address(&self) -> &str {

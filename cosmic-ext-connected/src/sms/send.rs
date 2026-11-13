@@ -28,35 +28,38 @@ fn attachment_value(path: &std::path::Path) -> Result<Value<'static>, String> {
 pub async fn send_sms_async(
     conn: Arc<Mutex<Connection>>,
     device_id: String,
+    thread_id: i64,
     addresses: Vec<String>,
     sub_id: i64,
     message: String,
     attachment: Option<std::path::PathBuf>,
 ) -> Message {
+    let result = send_reply(conn, &device_id, addresses, sub_id, &message, attachment).await;
+    Message::SmsSendResult((device_id, thread_id), result)
+}
+
+async fn send_reply(
+    conn: Arc<Mutex<Connection>>,
+    device_id: &str,
+    addresses: Vec<String>,
+    sub_id: i64,
+    message: &str,
+    attachment: Option<std::path::PathBuf>,
+) -> Result<(), String> {
     let conn = conn.lock().await;
     let sms_path = format!("{}/devices/{}/sms", kdeconnect_dbus::BASE_PATH, device_id);
 
-    let attachments: Vec<Value<'_>> = match attachment.as_deref().map(attachment_value) {
-        Some(Ok(v)) => vec![v],
-        Some(Err(e)) => return Message::SmsSendResult(Err(e)),
+    let attachments: Vec<Value<'_>> = match attachment.as_deref() {
+        Some(path) => vec![attachment_value(path)?],
         None => vec![],
     };
 
-    let sms_proxy = match SmsProxy::builder(&conn)
+    let sms_proxy = SmsProxy::builder(&conn)
         .path(sms_path.as_str())
-        .ok()
-        .map(|b| b.build())
-    {
-        Some(fut) => match fut.await {
-            Ok(p) => p,
-            Err(e) => {
-                return Message::SmsSendResult(Err(format!("Failed to create proxy: {}", e)));
-            }
-        },
-        None => {
-            return Message::SmsSendResult(Err("Failed to build proxy path".to_string()));
-        }
-    };
+        .map_err(|_| "Failed to build proxy path".to_string())?
+        .build()
+        .await
+        .map_err(|e| format!("Failed to create proxy: {}", e))?;
 
     let recipient_count = addresses.len();
     let addresses: Vec<Value<'_>> = addresses
@@ -64,19 +67,15 @@ pub async fn send_sms_async(
         .map(|a| Value::Structure(Structure::from((a,))))
         .collect();
 
-    match sms_proxy
-        .send_sms(addresses, &message, attachments, sub_id)
+    sms_proxy
+        .send_sms(addresses, message, attachments, sub_id)
         .await
-    {
-        Ok(()) => {
-            tracing::info!("sendSms accepted for {} recipient(s)", recipient_count);
-            Message::SmsSendResult(Ok(message))
-        }
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("sendSms failed: {}", e);
-            Message::SmsSendResult(Err(format!("Send failed: {}", e)))
-        }
-    }
+            format!("Send failed: {}", e)
+        })?;
+    tracing::info!("sendSms accepted for {} recipient(s)", recipient_count);
+    Ok(())
 }
 
 /// Send an SMS to one or more recipients (creates or adds to existing conversation).
@@ -125,7 +124,7 @@ pub async fn send_new_sms_async(
         .send_without_conversation(addresses, &message, attachments)
         .await
     {
-        Ok(()) => Message::NewMessageSendResult(Ok(fl!("sms-sent"))),
+        Ok(()) => Message::NewMessageSendResult(Ok(())),
         Err(e) => Message::NewMessageSendResult(Err(format!("Send failed: {}", e))),
     }
 }

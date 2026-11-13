@@ -94,6 +94,10 @@ pub mod sms {
     /// Bound retries for a transient `request_conversion` rejection (busy /
     /// briefly-unavailable daemon) before surfacing SmsError. Each waits RETRY_DELAY_SECS
     pub const MAX_MESSAGE_LOAD_RETRIES: u8 = 3;
+
+    /// How long the reply caption reads "Sending..." before it relabels to
+    /// "Not confirmed by your phone". A late echo still clears it. See docs/SMS.md.
+    pub const SEND_ECHO_WINDOW_SECS: u64 = 60;
 }
 
 /// Popup geometry.

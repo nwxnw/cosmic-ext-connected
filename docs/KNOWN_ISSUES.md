@@ -35,11 +35,11 @@ To undo, set it back to `default`.
 
 ## Group Messages and Attachments Sent from the Desktop Never Confirm on Android 17
 
-On Android 17, an MMS sent from the desktop (any group message, or any message with an attachment) is delivered to its recipients but is never recorded as sent on the phone. Connected therefore never receives the sent copy, and the bubble stays on "Sending". One-to-one text messages go as SMS and are unaffected. This happens on the phone, not in the applet.
+On Android 17, an MMS sent from the desktop (any group message, or any message with an attachment) is delivered to its recipients but is never recorded as sent on the phone. Connected therefore never receives the sent copy: the message does not appear in the conversation, and after a minute the reply box reads "Not confirmed by your phone". One-to-one text messages go as SMS and are unaffected. This happens on the phone, not in the applet.
 
 ### Symptoms
 - The recipients receive the message
-- The sent bubble stays on "Sending" and is gone when the conversation is reopened
+- The message does not appear in the conversation, and the note under the reply box changes from "Sending..." to "Not confirmed by your phone" after a minute. The note is gone once you leave the conversation.
 - The phone's messaging app shows the send as "Not sent", often twice, or does not show it at all
 - One-to-one text messages from the desktop confirm normally
 
@@ -56,7 +56,7 @@ Send group messages and attachments from the phone until this is resolved. Befor
 An MMS whose attachment is a PDF, document or other non-media file renders as an empty bubble. The file itself is sent and delivered correctly. This is a KDE Connect Android limitation, not an applet bug.
 
 ### Symptoms
-- Send a PDF with no accompanying text produces a "Sending" bubble that is later joined by (or replaced with) an empty bubble carrying only a timestamp
+- Sending a PDF with no accompanying text produces an empty bubble carrying only a timestamp, once the phone confirms the send
 - Received non-media attachments show the same empty bubble
 - The conversation list preview for the thread is also empty, since there is no body and no attachment flag
 - Images, videos and audio in the same thread render normally

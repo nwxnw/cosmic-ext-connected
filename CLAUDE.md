@@ -106,7 +106,7 @@ cosmic-ext-connected/
 │
 └── docs/                    # Detailed implementation docs
     ├── DBUS.md              # D-Bus interface reference + pitfalls
-    ├── SMS.md               # SMS loading, merging, optimistic send, MMS cache
+    ├── SMS.md               # SMS loading, merging, send status, MMS cache
     ├── NOTIFICATIONS.md     # SMS/call/file notifications, dedup, ping limitation
     ├── MEDIA.md             # Media controls
     ├── UI_PATTERNS.md       # libcosmic UI patterns
@@ -192,10 +192,10 @@ it has cost real time. Mechanism lives in `docs/SMS.md` / `docs/DBUS.md` / `docs
 
 ## Detailed Documentation
 
-Implementation details live under `docs/`. Read the relevant file before working in that area — most cross-cutting pitfalls (the two `requestConversation` methods, `conversationLoaded` unreliability, subscription phase machines, optimistic-send reconciliation, MMS cache path, COSMIC notification daemon's `expire_timeout` quirk, etc.) are documented there, not in this file.
+Implementation details live under `docs/`. Read the relevant file before working in that area — most cross-cutting pitfalls (the two `requestConversation` methods, `conversationLoaded` unreliability, subscription phase machines, echo-based send status, MMS cache path, COSMIC notification daemon's `expire_timeout` quirk, etc.) are documented there, not in this file.
 
 - **[docs/DBUS.md](docs/DBUS.md)** — D-Bus interface reference, testing commands, signal subscription, surface-level pitfalls
-- **[docs/SMS.md](docs/SMS.md)** — Conversation list and thread loading, reaction-bucket merging, sending and optimistic reconciliation, MMS attachment cache
+- **[docs/SMS.md](docs/SMS.md)** — Conversation list and thread loading, reaction-bucket merging, sending and the echo-based send status, MMS attachment cache
 - **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** — SMS/call/file notifications, cross-process deduplication, ping limitation
 - **[docs/MEDIA.md](docs/MEDIA.md)** — Media player controls, `sendAction` pattern
 - **[docs/UI_PATTERNS.md](docs/UI_PATTERNS.md)** — libcosmic patterns, ViewMode, popups

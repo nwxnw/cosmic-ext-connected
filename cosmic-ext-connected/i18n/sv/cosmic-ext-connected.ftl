@@ -138,7 +138,6 @@ share-text-placeholder = Ange text eller URL att dela...
 dismiss = Avfärda
 
 # Fel och status
-sms-sent = Meddelande skickat!
 sms-failed = Misslyckades med att skicka meddelande
 
 # Daemon-fel

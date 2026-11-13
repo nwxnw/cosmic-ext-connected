@@ -184,16 +184,11 @@ not use `replyToConversation`: it resolves recipients from the oldest message in
 the wrong set for 20 of 100 recent threads (D.63), and on a pre-`26.08.0` daemon it needs that cache primed. If no message
 or conversation address is available, Connected shows a status and sends nothing.
 
-On success:
+On `Ok` the draft and staged attachment clear, and a caption under the compose box reads "Sending..." until the phone's sent copy arrives on the thread's long-lived message subscription. Nothing is added to the thread locally: the echo is the only copy of a sent message, so the thread shows only what the daemon reports. Send is disabled only while the D-Bus call is in flight, so an unechoed MMS does not block the next send.
 
-- the conversation preview updates immediately with the latest body and timestamp
-- an optimistic sent bubble is inserted into the open thread
-- the long-lived message subscription reconciles that optimistic entry when the phone echoes back the real sent message
+The echo is matched by type `Sent`, a body equal to the pending reply's, and being the newest message in the thread. The last test stops an older sent message with the same body, arriving from Load older or the initial load, from matching; every date in the thread is the phone's, so it has no clock skew, and a miss leaves the reply unconfirmed rather than wrongly confirmed. The match is scoped to the open merged set, so an echo on a sibling thread in `merged_thread_ids` still clears it. Because the phone files a reply by its recipient set, the echo lands on the canonical thread, which is in `merged_thread_ids` whenever merging is on.
 
-For merged conversations, optimistic-send reconciliation matches by `OPTIMISTIC_MESSAGE_UID` + body + 5-minute window 
-with no thread-id filter, so an echo arriving on a sibling thread within `merged_thread_ids` still upgrades the optimistic 
-bubble in place. Because the phone files a reply by its recipient set, the echo lands on the canonical thread, which is
-in `merged_thread_ids` whenever merging is on.
+If no echo arrives within `SEND_ECHO_WINDOW_SECS` (60 s), the caption changes to "Not confirmed by your phone", with an excerpt of the body when there is one. The clock only relabels: it never reports success or failure, and a late echo still clears it. The send state (`ReplySend` in `store.rs`) lives with the composer, so leaving the thread clears it. `SmsSendResult` carries the `(device_id, thread_id)` it was sent from, and a result for a thread that is no longer open changes no state, though a failure is still reported.
 
 ### New Messages
 
@@ -211,11 +206,11 @@ Both compose surfaces stage one file for the next send, passed through the `atta
 
 Each compose surface owns its own staged file, `pending_attachment` for the thread view and `new_message_pending_attachment` for New message, cleared wherever its sibling compose state is cleared. A shared field let a file staged in one surface be sent from the other with no chip in sight.
 
-No local preview is built. The optimistic entry carries an empty attachment list and reconciliation adopts the echo's list (`store.rs`, the uid-upgrade step), so the sent bubble renders through the received-message path. Without that adoption an attachment send reconciles cleanly and renders forever without its image.
+No local preview is built. The phone's echo is the only copy of a sent attachment, and it renders through the received-message path.
 
 The chooser is a portal round trip: the dialog takes focus and the panel tears the popup down, and the `SmsAttachmentSelected` and `NewMessageAttachmentSelected` arms in `app.rs` reopen it on every return path, cancel included, unless the panel left it standing. The double-click gap is in `docs/KNOWN_ISSUES.md`.
 
-Send outcome is unknowable for attachments as for text (see "A send has no terminal state" below); the phone side has two literal `// TODO: Notify other end` in `SmsMmsUtils.kt`. Copy may say "sent" in the hand-off sense, never "delivered".
+Send outcome is unknowable for attachments as for text (see "A send is confirmed only by its echo" below); the phone side has two literal `// TODO: Notify other end` in `SmsMmsUtils.kt`. Copy may say "sent" in the hand-off sense, never "delivered".
 
 ### Sync indicator
 
@@ -250,7 +245,7 @@ The KDE Connect daemon sets its Qt application name to `"kdeconnect.daemon"` in 
 
 - `conversationLoaded` reports `m_known_messages[id].size()` - the count of distinct message UIDs the daemon currently holds **in memory** for that thread - not the phone's authoritative total. It is emitted only from `addMessages()`, so it fires only when the phone has delivered a batch, never on a purely cached read.
 - Notification correctness depends on careful `last_seen_sms` handling when opening threads and merging incoming data.
-- **A send has no terminal state.** `Ok` from `sendSms` / `sendWithoutConversation` means the D-Bus call worked, nothing more (`docs/DBUS.md` → "A void method's `Ok`"); the only evidence of delivery is the phone's echo, so an unconfirmed send stays an optimistic bubble with no failed state. The conversation list is not updated optimistically. The row changes when the phone's echo arrives on the live list subscription.
+- **A send is confirmed only by its echo.** `Ok` from `sendSms` / `sendWithoutConversation` means the D-Bus call worked, nothing more (`docs/DBUS.md` → "A void method's `Ok`"). The phone's sent copy is the only evidence, and it means the phone recorded the message as sent, not that it was delivered. A reply with no echo ends at "Not confirmed by your phone", which means unknown, not failed. The conversation list is not updated optimistically. The row changes when the phone's echo arrives on the live list subscription.
 - **History: a pre-`26.08.0` daemon silently discards a `replyToConversation` when the thread is not in its cache.** Connected no longer calls `replyToConversation` (see "Replies"), so this no longer affects it; kept for anyone driving the daemon directly. Upstream BUG 517659, fixed in `3bf16922` and first shipped in `v26.08.0`: `replyToConversation()` logged a warning and dropped the message outright when `m_conversations` did not hold the target thread, which is the state after a device reconnect, or before the list has loaded for the session. **This is the daemon's behaviour, not applet logic**. 
 - **An attachment-only MMS can echo back without its attachment.** A text-less send sometimes come back with `eventField 0` and an empty attachment list, so the bubble renders as a bare timestamp. No pattern found; upstream. See `docs/KNOWN_ISSUES.md`.
 

@@ -137,7 +137,6 @@ share-text-placeholder = Wpisz tekst lub adres URL do udostępnienia...
 dismiss = Odrzuć
 
 # Errors and status
-sms-sent = Wiadomość wysłana!
 sms-failed = Nie udało się wysłać wiadomości
 
 # Daemon errors
