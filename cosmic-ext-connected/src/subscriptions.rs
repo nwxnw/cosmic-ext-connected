@@ -767,11 +767,13 @@ pub fn conversation_message_subscription(
                     .await
                     {
                         Ok(c) => c,
-                        Err(_) => {
+                        Err(e) => {
+                            tracing::error!(
+                                "Message subscription: D-Bus connect failed for conversation: {}",
+                                e
+                            );
                             return Some((
-                                Message::SmsError(
-                                    "D-Bus connection failed for conversation".to_string(),
-                                ),
+                                Message::SmsError(e.to_string()),
                                 ConversationMessageState::Done,
                             ));
                         }
@@ -780,11 +782,13 @@ pub fn conversation_message_subscription(
                     // Add match rule for conversationUpdated signals
                     let dbus_proxy = match zbus::fdo::DBusProxy::new(&conn).await {
                         Ok(p) => p,
-                        Err(_) => {
+                        Err(e) => {
+                            tracing::error!(
+                                "Message subscription: D-Bus proxy failed for conversation: {}",
+                                e
+                            );
                             return Some((
-                                Message::SmsError(
-                                    "D-Bus proxy failed for conversation".to_string(),
-                                ),
+                                Message::SmsError(e.to_string()),
                                 ConversationMessageState::Done,
                             ));
                         }
@@ -850,11 +854,12 @@ pub fn conversation_message_subscription(
                     {
                         Ok(p) => p,
                         Err(e) => {
+                            tracing::error!(
+                                "Message subscription: Failed to create conversations proxy: {}",
+                                e
+                            );
                             return Some((
-                                Message::SmsError(format!(
-                                    "Failed to create conversations proxy: {}",
-                                    e
-                                )),
+                                Message::SmsError(e.to_string()),
                                 ConversationMessageState::Done,
                             ));
                         }
@@ -879,10 +884,7 @@ pub fn conversation_message_subscription(
                                                     thread_id, attempt, e
                                                 );
                                     return Some((
-                                        Message::SmsError(format!(
-                                            "Failed to request conversation after {} attempts:{}",
-                                            attempt, e
-                                        )),
+                                        Message::SmsError(e.to_string()),
                                         ConversationMessageState::Done, //give up gracefully
                                     ));
                                 }

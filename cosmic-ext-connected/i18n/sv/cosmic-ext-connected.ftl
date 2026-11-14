@@ -130,6 +130,7 @@ start-playing = Börja spela musik på din telefon
 media-not-available = Mediekontroller är inte tillgängliga
 enable-mpris = Se till att MPRIS-pluginet är aktiverat
 player = Spelare:
+no-track-playing = Inget spår spelas
 
 # Dela dialogruta
 share-text-placeholder = Ange text eller URL att dela...
@@ -139,6 +140,38 @@ dismiss = Avfärda
 
 # Fel och status
 sms-failed = Misslyckades med att skicka meddelande
+# TODO: translate
+sms-load-failed = Failed to load messages
+# TODO: translate
+sending-ping = Sending ping...
+ping-sent = Ping skickat!
+ping-failed = Misslyckades med att skicka ping
+# TODO: translate
+sharing-file = Sharing file...
+# TODO: translate
+sharing-text = Sharing text...
+share-complete = Delning är slutförd
+share-failed = Misslyckades att dela
+pairing-request-sent = Parkopplingsförfrågan skickad...
+# TODO: translate
+pairing-accept-on-device = Pairing request sent. Accept it on your device.
+pairing-accepted = Parkoppling accepterad
+pairing-rejected = Parkoppling avvisad
+# TODO: translate
+unpairing = Unpairing...
+unpaired = Avparad från enhet
+# TODO: translate
+accepting-pairing = Accepting pairing...
+# TODO: translate
+rejecting-pairing = Rejecting pairing...
+# TODO: translate
+sending-clipboard = Sending clipboard...
+clipboard-sent = Urklipp skickat!
+clipboard-failed = Misslyckades med att skicka urklipp
+# TODO: translate
+dismiss-failed = Failed to dismiss notification
+# TODO: translate
+media-failed = Media control failed
 
 # Daemon-fel
 daemon-unreachable = Kan inte ansluta till KDE Connect

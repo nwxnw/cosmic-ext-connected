@@ -131,6 +131,7 @@ start-playing = Start playing music on your phone
 media-not-available = Media controls not available
 enable-mpris = Make sure the MPRIS plugin is enabled
 player = Player:
+no-track-playing = No track playing
 
 # Share dialog
 share-text-placeholder = Enter text or URL to share...
@@ -140,6 +141,27 @@ dismiss = Dismiss
 
 # Errors and status
 sms-failed = Failed to send message
+sms-load-failed = Failed to load messages
+sending-ping = Sending ping...
+ping-sent = Ping sent!
+ping-failed = Failed to send ping
+sharing-file = Sharing file...
+sharing-text = Sharing text...
+share-complete = Share complete
+share-failed = Failed to share
+pairing-request-sent = Pairing request sent...
+pairing-accept-on-device = Pairing request sent. Accept it on your device.
+pairing-accepted = Pairing accepted
+pairing-rejected = Pairing rejected
+unpairing = Unpairing...
+unpaired = Unpaired from device
+accepting-pairing = Accepting pairing...
+rejecting-pairing = Rejecting pairing...
+sending-clipboard = Sending clipboard...
+clipboard-sent = Clipboard sent!
+clipboard-failed = Failed to send clipboard
+dismiss-failed = Failed to dismiss notification
+media-failed = Media control failed
 
 # Daemon errors
 daemon-unreachable = Cannot connect to KDE Connect

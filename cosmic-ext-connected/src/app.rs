@@ -1001,7 +1001,7 @@ impl Application for ConnectApplet {
             // Ping
             Message::SendPing(device_id) => {
                 if let Some(conn) = self.dbus_connection.clone() {
-                    self.set_status("Sending ping...".to_string());
+                    self.set_status(fl!("sending-ping"));
                     return cosmic::app::Task::perform(
                         send_ping_async(conn.clone(), device_id),
                         |result| cosmic::Action::App(Message::PingComplete(result)),
@@ -1011,11 +1011,11 @@ impl Application for ConnectApplet {
             Message::PingComplete(result) => match result {
                 Ok(()) => {
                     tracing::info!("Ping sent successfully");
-                    return self.set_transient_status("Ping sent!".to_string());
+                    return self.set_transient_status(fl!("ping-sent"));
                 }
                 Err(e) => {
                     tracing::error!("Ping failed: {}", e);
-                    return self.set_transient_status(format!("Ping failed: {}", e));
+                    return self.set_transient_status(format!("{}: {}", fl!("ping-failed"), e));
                 }
             },
 
@@ -1076,7 +1076,7 @@ impl Application for ConnectApplet {
                 let reopen = self.reopen_after_chooser();
                 let share = match (self.dbus_connection.clone(), path) {
                     (Some(conn), Some(path)) => {
-                        self.set_status("Sharing file...".to_string());
+                        self.set_status(fl!("sharing-file"));
                         cosmic::app::Task::perform(
                             share_file_async(conn, device_id, path),
                             |result| cosmic::Action::App(Message::ShareComplete(result)),
@@ -1093,7 +1093,7 @@ impl Application for ConnectApplet {
                 if !text.is_empty() {
                     if let Some(conn) = self.dbus_connection.clone() {
                         self.share_text_input.clear();
-                        self.set_status("Sharing text...".to_string());
+                        self.set_status(fl!("sharing-text"));
                         return cosmic::app::Task::perform(
                             share_text_async(conn.clone(), device_id, text),
                             |result| cosmic::Action::App(Message::ShareComplete(result)),
@@ -1104,11 +1104,11 @@ impl Application for ConnectApplet {
             Message::ShareComplete(result) => match result {
                 Ok(()) => {
                     tracing::info!("Share completed successfully");
-                    return self.set_transient_status("Shared successfully!".to_string());
+                    return self.set_transient_status(fl!("share-complete"));
                 }
                 Err(e) => {
                     tracing::error!("Share failed: {}", e);
-                    return self.set_transient_status(format!("Share failed: {}", e));
+                    return self.set_transient_status(format!("{}: {}", fl!("share-failed"), e));
                 }
             },
             Message::ConfigChanged(config) => {
@@ -1126,7 +1126,7 @@ impl Application for ConnectApplet {
                 if let Some(conn) = self.dbus_connection.clone() {
                     tracing::info!("Requesting pairing with device: {}", device_id);
                     self.pairing_error = None;
-                    self.set_status("Pairing request sent...".to_string());
+                    self.set_status(fl!("pairing-request-sent"));
                     return cosmic::app::Task::perform(
                         request_pair_async(conn.clone(), device_id),
                         cosmic::Action::App,
@@ -1150,7 +1150,7 @@ impl Application for ConnectApplet {
                         self.selected_device = None;
                         self.set_view(ViewMode::DeviceList);
                     }
-                    self.set_status("Unpairing...".to_string());
+                    self.set_status(fl!("unpairing"));
 
                     return cosmic::app::Task::perform(
                         unpair_async(conn.clone(), device_id),
@@ -1162,7 +1162,7 @@ impl Application for ConnectApplet {
                 if let Some(conn) = self.dbus_connection.clone() {
                     tracing::info!("Accepting pairing from device: {}", device_id);
                     self.pairing_error = None;
-                    self.set_status("Accepting pairing...".to_string());
+                    self.set_status(fl!("accepting-pairing"));
                     return cosmic::app::Task::perform(
                         accept_pairing_async(conn.clone(), device_id),
                         cosmic::Action::App,
@@ -1174,7 +1174,7 @@ impl Application for ConnectApplet {
                     tracing::info!("Rejecting/cancelling pairing for device: {}", device_id);
                     self.pairing_error = None;
                     self.pairing_cancel_expected = Some(device_id.clone());
-                    self.set_status("Rejecting pairing...".to_string());
+                    self.set_status(fl!("rejecting-pairing"));
                     return cosmic::app::Task::perform(
                         reject_pairing_async(conn.clone(), device_id),
                         cosmic::Action::App,
@@ -1189,7 +1189,7 @@ impl Application for ConnectApplet {
                     }
                     Err(err) => {
                         tracing::error!("Pairing error: {}", err);
-                        self.set_status(format!("Error: {}", err));
+                        self.set_status(format!("{}: {}", fl!("error"), err));
                     }
                 }
                 // Refresh devices to update pairing state
@@ -1280,7 +1280,7 @@ impl Application for ConnectApplet {
                     Ok(msg) => tracing::info!("Dismiss result: {}", msg),
                     Err(err) => {
                         tracing::error!("Dismiss error: {}", err);
-                        self.set_status(format!("Failed to dismiss: {}", err));
+                        self.set_status(format!("{}: {}", fl!("dismiss-failed"), err));
                     }
                 }
                 // Refresh devices to update notification list
@@ -1296,7 +1296,7 @@ impl Application for ConnectApplet {
             Message::SendClipboard(device_id) => {
                 if let Some(conn) = self.dbus_connection.clone() {
                     tracing::info!("Sending clipboard to device: {}", device_id);
-                    self.set_status("Sending clipboard...".to_string());
+                    self.set_status(fl!("sending-clipboard"));
                     return cosmic::app::Task::perform(
                         send_clipboard_async(conn.clone(), device_id),
                         cosmic::Action::App,
@@ -1310,7 +1310,11 @@ impl Application for ConnectApplet {
                 }
                 Err(err) => {
                     tracing::error!("Clipboard error: {}", err);
-                    return self.set_transient_status(format!("Clipboard error: {}", err));
+                    return self.set_transient_status(format!(
+                        "{}: {}",
+                        fl!("clipboard-failed"),
+                        err
+                    ));
                 }
             },
 
@@ -1768,7 +1772,7 @@ impl Application for ConnectApplet {
             }
             Message::MediaActionResult(result) => {
                 let clear_task = if let Err(err) = result {
-                    self.set_transient_status(format!("Media error: {}", err))
+                    self.set_transient_status(format!("{}: {}", fl!("media-failed"), err))
                 } else {
                     cosmic::app::Task::none()
                 };

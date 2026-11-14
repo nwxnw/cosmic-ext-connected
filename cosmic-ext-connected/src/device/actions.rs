@@ -1,6 +1,7 @@
 //! Device actions: ping, find my phone, share, pairing, clipboard, notifications.
 
 use crate::app::Message;
+use crate::fl;
 use kdeconnect_dbus::{
     plugins::{ClipboardProxy, FindMyPhoneProxy, NotificationProxy, PingProxy, ShareProxy},
     DeviceProxy,
@@ -96,15 +97,17 @@ pub async fn request_pair_async(conn: Arc<Mutex<Connection>>, device_id: String)
     let device = match DeviceProxy::for_device(&conn, &device_id).await {
         Ok(d) => d,
         Err(e) => {
-            return Message::PairingResult(Err(format!("Failed to connect to device: {}", e)));
+            tracing::error!("Pairing request: no device proxy for {}: {}", device_id, e);
+            return Message::PairingResult(Err(e.to_string()));
         }
     };
 
     match device.request_pair().await {
-        Ok(()) => Message::PairingResult(Ok(
-            "Pairing request sent. Please accept on your device.".to_string()
-        )),
-        Err(e) => Message::PairingResult(Err(format!("Failed to request pairing: {}", e))),
+        Ok(()) => Message::PairingResult(Ok(fl!("pairing-accept-on-device"))),
+        Err(e) => {
+            tracing::error!("Pairing request to {} failed: {}", device_id, e);
+            Message::PairingResult(Err(e.to_string()))
+        }
     }
 }
 
@@ -115,13 +118,17 @@ pub async fn unpair_async(conn: Arc<Mutex<Connection>>, device_id: String) -> Me
     let device = match DeviceProxy::for_device(&conn, &device_id).await {
         Ok(d) => d,
         Err(e) => {
-            return Message::PairingResult(Err(format!("Failed to connect to device: {}", e)));
+            tracing::error!("Unpair: no device proxy for {}: {}", device_id, e);
+            return Message::PairingResult(Err(e.to_string()));
         }
     };
 
     match device.unpair().await {
-        Ok(()) => Message::PairingResult(Ok("Device unpaired successfully.".to_string())),
-        Err(e) => Message::PairingResult(Err(format!("Failed to unpair: {}", e))),
+        Ok(()) => Message::PairingResult(Ok(fl!("unpaired"))),
+        Err(e) => {
+            tracing::error!("Unpair from {} failed: {}", device_id, e);
+            Message::PairingResult(Err(e.to_string()))
+        }
     }
 }
 
@@ -132,13 +139,17 @@ pub async fn accept_pairing_async(conn: Arc<Mutex<Connection>>, device_id: Strin
     let device = match DeviceProxy::for_device(&conn, &device_id).await {
         Ok(d) => d,
         Err(e) => {
-            return Message::PairingResult(Err(format!("Failed to connect to device: {}", e)));
+            tracing::error!("Accept pairing: no device proxy for {}: {}", device_id, e);
+            return Message::PairingResult(Err(e.to_string()));
         }
     };
 
     match device.accept_pairing().await {
-        Ok(()) => Message::PairingResult(Ok("Pairing accepted.".to_string())),
-        Err(e) => Message::PairingResult(Err(format!("Failed to accept pairing: {}", e))),
+        Ok(()) => Message::PairingResult(Ok(fl!("pairing-accepted"))),
+        Err(e) => {
+            tracing::error!("Accept pairing for {} failed: {}", device_id, e);
+            Message::PairingResult(Err(e.to_string()))
+        }
     }
 }
 
@@ -149,13 +160,17 @@ pub async fn reject_pairing_async(conn: Arc<Mutex<Connection>>, device_id: Strin
     let device = match DeviceProxy::for_device(&conn, &device_id).await {
         Ok(d) => d,
         Err(e) => {
-            return Message::PairingResult(Err(format!("Failed to connect to device: {}", e)));
+            tracing::error!("Reject pairing: no device proxy for {}: {}", device_id, e);
+            return Message::PairingResult(Err(e.to_string()));
         }
     };
 
     match device.reject_pairing().await {
-        Ok(()) => Message::PairingResult(Ok("Pairing rejected/cancelled.".to_string())),
-        Err(e) => Message::PairingResult(Err(format!("Failed to reject pairing: {}", e))),
+        Ok(()) => Message::PairingResult(Ok(fl!("pairing-rejected"))),
+        Err(e) => {
+            tracing::error!("Reject pairing for {} failed: {}", device_id, e);
+            Message::PairingResult(Err(e.to_string()))
+        }
     }
 }
 
@@ -174,30 +189,21 @@ pub async fn dismiss_notification_async(
         notification_id
     );
 
-    let notif_proxy = match NotificationProxy::builder(&conn)
-        .path(notif_path.as_str())
-        .ok()
-        .map(|b| b.build())
+    let notif_proxy = match async {
+        NotificationProxy::builder(&conn)
+            .path(notif_path.as_str())?
+            .build()
+            .await
+    }
+    .await
     {
-        Some(fut) => match fut.await {
-            Ok(p) => p,
-            Err(e) => {
-                return Message::DismissResult(Err(format!(
-                    "Failed to create notification proxy: {}",
-                    e
-                )));
-            }
-        },
-        None => {
-            return Message::DismissResult(Err(
-                "Failed to build notification proxy path".to_string()
-            ));
-        }
+        Ok(p) => p,
+        Err(e) => return Message::DismissResult(Err(e.to_string())),
     };
 
     match notif_proxy.dismiss().await {
         Ok(()) => Message::DismissResult(Ok("Notification dismissed".to_string())),
-        Err(e) => Message::DismissResult(Err(format!("Failed to dismiss: {}", e))),
+        Err(e) => Message::DismissResult(Err(e.to_string())),
     }
 }
 
@@ -209,23 +215,20 @@ pub async fn send_clipboard_async(conn: Arc<Mutex<Connection>>, device_id: Strin
         kdeconnect_dbus::BASE_PATH,
         device_id
     );
-
-    let clipboard = match ClipboardProxy::builder(&conn)
-        .path(path.as_str())
-        .ok()
-        .map(|b| b.build())
+    let clipboard = match async {
+        ClipboardProxy::builder(&conn)
+            .path(path.as_str())?
+            .build()
+            .await
+    }
+    .await
     {
-        Some(fut) => match fut.await {
-            Ok(c) => c,
-            Err(e) => {
-                return Message::ClipboardResult(Err(format!("Failed to create proxy: {}", e)))
-            }
-        },
-        None => return Message::ClipboardResult(Err("Failed to build proxy path".to_string())),
+        Ok(c) => c,
+        Err(e) => return Message::ClipboardResult(Err(e.to_string())),
     };
 
     match clipboard.send_clipboard().await {
-        Ok(()) => Message::ClipboardResult(Ok("Clipboard sent to device".to_string())),
-        Err(e) => Message::ClipboardResult(Err(format!("Failed to send clipboard: {}", e))),
+        Ok(()) => Message::ClipboardResult(Ok(fl!("clipboard-sent"))),
+        Err(e) => Message::ClipboardResult(Err(e.to_string())),
     }
 }

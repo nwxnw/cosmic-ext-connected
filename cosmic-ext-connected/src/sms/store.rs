@@ -848,7 +848,7 @@ impl SmsConversationStore {
                 tracing::error!("SMS error: {}", err);
                 self.sms_loading_state = SmsLoadingState::Idle;
                 self.message_sync_active = false;
-                let status = format!("SMS error: {}", err);
+                let status = format!("{}: {}", fl!("sms-load-failed"), err);
                 (cosmic::app::Task::none(), SmsReply::Status(status))
             }
 

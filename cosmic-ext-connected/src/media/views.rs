@@ -122,7 +122,7 @@ pub fn view_media_player(info: &MediaInfo) -> Element<'_, Message> {
 
     // Track info
     let title_text = if info.title.is_empty() {
-        "No track playing".to_string()
+        fl!("no-track-playing")
     } else {
         info.title.clone()
     };

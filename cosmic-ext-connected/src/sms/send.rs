@@ -56,10 +56,10 @@ async fn send_reply(
 
     let sms_proxy = SmsProxy::builder(&conn)
         .path(sms_path.as_str())
-        .map_err(|_| "Failed to build proxy path".to_string())?
+        .map_err(|e| e.to_string())?
         .build()
         .await
-        .map_err(|e| format!("Failed to create proxy: {}", e))?;
+        .map_err(|e| e.to_string())?;
 
     let recipient_count = addresses.len();
     let addresses: Vec<Value<'_>> = addresses
@@ -72,7 +72,7 @@ async fn send_reply(
         .await
         .map_err(|e| {
             tracing::error!("sendSms failed: {}", e);
-            format!("Send failed: {}", e)
+            e.to_string()
         })?;
     tracing::info!("sendSms accepted for {} recipient(s)", recipient_count);
     Ok(())
@@ -94,23 +94,16 @@ pub async fn send_new_sms_async(
         Some(Err(e)) => return Message::NewMessageSendResult(Err(e)),
         None => vec![],
     };
-    let conversations_proxy = match ConversationsProxy::builder(&conn)
-        .path(device_path.as_str())
-        .ok()
-        .map(|b| b.build())
+    let conversations_proxy = match async {
+        ConversationsProxy::builder(&conn)
+            .path(device_path.as_str())?
+            .build()
+            .await
+    }
+    .await
     {
-        Some(fut) => match fut.await {
-            Ok(p) => p,
-            Err(e) => {
-                return Message::NewMessageSendResult(Err(format!(
-                    "Failed to create proxy: {}",
-                    e
-                )));
-            }
-        },
-        None => {
-            return Message::NewMessageSendResult(Err("Failed to build proxy path".to_string()));
-        }
+        Ok(p) => p,
+        Err(e) => return Message::NewMessageSendResult(Err(e.to_string())),
     };
 
     // Format addresses as D-Bus structs for KDE Connect
@@ -125,6 +118,6 @@ pub async fn send_new_sms_async(
         .await
     {
         Ok(()) => Message::NewMessageSendResult(Ok(())),
-        Err(e) => Message::NewMessageSendResult(Err(format!("Send failed: {}", e))),
+        Err(e) => Message::NewMessageSendResult(Err(e.to_string())),
     }
 }

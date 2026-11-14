@@ -121,6 +121,7 @@ type-message = Wpisz wiadomość...
 send = Wyślij
 sending = Wysyłanie...
 reply-no-recipient = Nie znaleziono adresata tej konwersacji - nic nie zostało wysłane
+no-track-playing = Nie odtwarza utworu
 
 # Media controls
 loading-media = Ładowanie informacji o mediach...
@@ -138,6 +139,38 @@ dismiss = Odrzuć
 
 # Errors and status
 sms-failed = Nie udało się wysłać wiadomości
+# TODO: translate
+sms-load-failed = Failed to load messages
+# TODO: translate
+sending-ping = Sending ping...
+ping-sent = Wysłano ping!
+ping-failed = Nie udało się wysłać pinga
+# TODO: translate
+sharing-file = Sharing file...
+# TODO: translate
+sharing-text = Sharing text...
+share-complete = Udostępnianie ukończone
+share-failed = Nie udało się udostępnić
+pairing-request-sent = Wysłano prośbę o sparowanie...
+# TODO: translate
+pairing-accept-on-device = Pairing request sent. Accept it on your device.
+pairing-accepted = Parowanie zaakceptowane
+pairing-rejected = Parowanie odrzucone
+# TODO: translate
+unpairing = Unpairing...
+unpaired = Odparowano od urządzenia
+# TODO: translate
+accepting-pairing = Accepting pairing...
+# TODO: translate
+rejecting-pairing = Rejecting pairing...
+# TODO: translate
+sending-clipboard = Sending clipboard...
+clipboard-sent = Wysłano schowek!
+clipboard-failed = Nie udało się wysłać schowka
+# TODO: translate
+dismiss-failed = Failed to dismiss notification
+# TODO: translate
+media-failed = Media control failed
 
 # Daemon errors
 daemon-unreachable = Nie udało połączyć się z KDE Connect

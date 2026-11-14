@@ -129,6 +129,7 @@ start-playing = Spusťte na telefonu hudbu
 media-not-available = Ovládání médií není k dispozici
 enable-mpris = Ujistěte se, že je zapnutý MPRIS plugin
 player = Přehrávač:
+no-track-playing = Nic se nepřehrává
 
 # Share dialog
 share-text-placeholder = Zadejte text nebo URL ke sdílení...
@@ -138,6 +139,38 @@ dismiss = Zavřít
 
 # Errors and status
 sms-failed = Odeslání zprávy selhalo
+# TODO: translate
+sms-load-failed = Failed to load messages
+# TODO: translate
+sending-ping = Sending ping...
+ping-sent = Ping odeslán!
+ping-failed = Odeslání pingu selhalo
+# TODO: translate
+sharing-file = Sharing file...
+# TODO: translate
+sharing-text = Sharing text...
+share-complete = Sdílení dokončeno
+share-failed = Sdílení selhalo
+pairing-request-sent = Žádost o spárování odeslána...
+# TODO: translate
+pairing-accept-on-device = Pairing request sent. Accept it on your device.
+pairing-accepted = Párování přijato
+pairing-rejected = Párování odmítnuto
+# TODO: translate
+unpairing = Unpairing...
+unpaired = Párování se zařízením zrušeno
+# TODO: translate
+accepting-pairing = Accepting pairing...
+# TODO: translate
+rejecting-pairing = Rejecting pairing...
+# TODO: translate
+sending-clipboard = Sending clipboard...
+clipboard-sent = Schránka odeslána!
+clipboard-failed = Odeslání schránky selhalo
+# TODO: translate
+dismiss-failed = Failed to dismiss notification
+# TODO: translate
+media-failed = Media control failed
 
 # Daemon errors
 daemon-unreachable = Nelze se připojit ke KDE Connect
