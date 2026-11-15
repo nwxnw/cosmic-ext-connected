@@ -15,8 +15,7 @@ therefore operates on a *set* of threadIds rather than one, which is the assumpt
 checking before changing anything here.
 
 The daemon offers no reliable "done" event, so both subscriptions derive settlement locally: the
-list on a quiet window with one cold-start retry, threads on a full page received. Selecting a
-device prefetches conversation heads with `activeConversations()` so the SMS view can open warm.
+list on a quiet window with one cold-start retry, threads on a full page received.
 
 ## Architecture Overview
 

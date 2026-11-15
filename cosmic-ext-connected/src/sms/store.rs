@@ -181,7 +181,6 @@ pub struct SmsConversationStore {
     /// re-derivation works off this cache without re-fetching.
     pub(crate) raw_conversations: Vec<ConversationSummary>,
     pub(crate) conversations: Vec<LogicalConversation>,
-    pub(crate) sms_prefetch: Option<(String, Vec<ConversationSummary>)>,
     pub(crate) conversation_sync_active: bool,
     pub(crate) new_message_sync_active: bool,
     pub(crate) conversation_list_subscription_active: bool,
@@ -247,7 +246,6 @@ impl SmsConversationStore {
             sms_device_name: None,
             raw_conversations: Vec::new(),
             conversations: Vec::new(),
-            sms_prefetch: None,
             conversation_sync_active: false,
             new_message_sync_active: false,
             conversation_list_subscription_active: false,
@@ -643,13 +641,6 @@ impl SmsConversationStore {
 
     pub fn update(&mut self, msg: Message, ctx: &SmsCtx) -> (cosmic::app::Task<Message>, SmsReply) {
         match msg {
-            Message::SmsPrefetchReady(device_id, conversations) => {
-                if !conversations.is_empty() {
-                    self.sms_prefetch = Some((device_id, conversations));
-                }
-                (cosmic::app::Task::none(), SmsReply::NoOp)
-            }
-
             // Subscription-based conversation list loading handlers
             Message::ConversationReceived {
                 device_id,

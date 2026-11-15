@@ -342,41 +342,6 @@ pub fn parse_sms_message(value: &OwnedValue) -> Option<SmsMessage> {
     })
 }
 
-/// Parse a list of D-Bus variant values into conversation summaries.
-///
-/// Groups messages by thread_id and extracts the most recent message
-/// from each thread to create summaries.
-pub fn parse_conversations(values: Vec<OwnedValue>) -> Vec<ConversationSummary> {
-    let mut messages: Vec<SmsMessage> = values.iter().filter_map(parse_sms_message).collect();
-
-    // Sort by date descending to get most recent first
-    messages.sort_by_key(|m| std::cmp::Reverse(m.date));
-
-    // Group by thread_id and take the first (most recent) message per thread
-    let mut seen_threads = std::collections::HashSet::new();
-    let mut summaries = Vec::new();
-
-    for msg in messages {
-        if seen_threads.contains(&msg.thread_id) {
-            continue;
-        }
-        seen_threads.insert(msg.thread_id);
-
-        let has_attachments = !msg.attachments.is_empty();
-        summaries.push(ConversationSummary {
-            thread_id: msg.thread_id,
-            addresses: msg.addresses,
-            last_message: msg.body,
-            timestamp: msg.date,
-            unread: !msg.read,
-            has_attachments,
-            sub_id: msg.sub_id,
-        });
-    }
-
-    summaries
-}
-
 /// Canonicalize a phone number by removing formatting characters.
 ///
 /// Strips spaces, dashes, parentheses, and plus signs.

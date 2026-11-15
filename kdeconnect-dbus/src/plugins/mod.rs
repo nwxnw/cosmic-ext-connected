@@ -22,7 +22,7 @@ pub use notifications::{NotificationInfo, NotificationProxy, NotificationsProxy}
 pub use ping::PingProxy;
 pub use share::ShareProxy;
 pub use sms::{
-    is_address_valid, parse_conversations, parse_sms_message, Attachment, ConversationSummary,
-    ConversationsProxy, MessageType, SmsMessage, SmsProxy,
+    is_address_valid, parse_sms_message, Attachment, ConversationSummary, ConversationsProxy,
+    MessageType, SmsMessage, SmsProxy,
 };
 pub use telephony::TelephonyProxy;

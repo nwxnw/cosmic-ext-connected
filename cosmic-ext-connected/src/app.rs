@@ -16,7 +16,7 @@ use crate::media::{
     fetch_media_info_async, media_action_async, view_media_controls, MediaAction,
     MediaControlsParams,
 };
-use crate::sms::{prefetch_conversations_async, ReplySend, SmsConversationStore, SmsViewMode};
+use crate::sms::{ReplySend, SmsConversationStore, SmsViewMode};
 use crate::subscriptions::{
     call_notification_subscription, dbus_signal_subscription, sms_notification_subscription,
 };
@@ -168,8 +168,6 @@ pub enum Message {
     // SMS
     /// Open SMS view for a device
     OpenSmsView(String),
-    /// Prefetched conversations ready from device selection background fetch
-    SmsPrefetchReady(String, Vec<ConversationSummary>),
     /// Close SMS view and return to device list
     CloseSmsView,
     /// Open a specific conversation thread
@@ -960,20 +958,11 @@ impl Application for ConnectApplet {
                 self.selected_device = Some(device_id.clone());
                 self.set_view(ViewMode::DevicePage);
                 self.share_text_input.clear();
-
-                // Prefetch SMS conversations so they're ready when user opens SMS
-                if let Some(conn) = &self.dbus_connection {
-                    return cosmic::app::Task::perform(
-                        prefetch_conversations_async(conn.clone(), device_id),
-                        cosmic::Action::App,
-                    );
-                }
             }
             Message::BackToList => {
                 self.selected_device = None;
                 self.set_view(ViewMode::DeviceList);
                 self.share_text_input.clear();
-                self.sms.sms_prefetch = None;
                 self.pairing_error = None;
             }
             Message::OpenSendToView(device_id, device_type) => {
@@ -1428,13 +1417,6 @@ impl Application for ConnectApplet {
                         cosmic::app::Task::none()
                     };
 
-                    // Check if we have prefetched conversations for this device
-                    let has_prefetch = self
-                        .sms
-                        .sms_prefetch
-                        .as_ref()
-                        .is_some_and(|(id, convs)| id == &device_id && !convs.is_empty());
-
                     if has_cache {
                         // Show the cached list now; the list subscription streams the
                         // daemon's bootstrap on top of it
@@ -1447,30 +1429,6 @@ impl Application for ConnectApplet {
                             device_id
                         );
                         // The list subscription takes it from here
-                        return contacts_task;
-                    } else if has_prefetch {
-                        // Use prefetched conversations from device selection
-                        if let Some((_, prefetched)) = self.sms.sms_prefetch.take() {
-                            // Seed last_seen_sms to prevent false notifications
-                            for conv in &prefetched {
-                                let key = (device_id.clone(), conv.thread_id);
-                                let current = self.sms.last_seen_sms.get(&key).copied();
-                                if current.is_none() || current < Some(conv.timestamp) {
-                                    self.sms.last_seen_sms.insert(key, conv.timestamp);
-                                }
-                            }
-                            // Seed raw_conversations and re-derive so the merge toggle works before the subscription's first refresh.
-                            self.sms.raw_conversations = prefetched;
-                            self.sms.rederive_conversations(&self.config);
-                            self.sms.sms_loading_state = SmsLoadingState::Idle;
-                            self.sms.conversation_sync_active = true;
-                            self.sms.conversation_list_subscription_active = true;
-                            tracing::info!(
-                                "Using prefetched {} conversations for device: {}, starting subscription-based sync",
-                                self.sms.conversations.len(),
-                                device_id
-                            );
-                        }
                         return contacts_task;
                     } else {
                         // No cache or different device - subscription-based loading
@@ -1938,8 +1896,7 @@ impl Application for ConnectApplet {
             // The 6 SMS lifecycle arms (OpenSmsView, CloseSmsView, OpenConversation,
             // CloseConversation, OpenNewMessage, CloseNewMessage) stay inline above
             // because they touch view_mode (app-owned).
-            Message::SmsPrefetchReady(_, _)
-            | Message::ContactsLoaded(_, _)
+            Message::ContactsLoaded(_, _)
             | Message::ConversationReceived { .. }
             | Message::NewMessageSyncSettle { .. }
             | Message::ConversationSyncStarted { .. }

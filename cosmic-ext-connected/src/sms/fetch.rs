@@ -1,7 +1,7 @@
 //! SMS conversation and message fetching from KDE Connect.
 
 use crate::app::Message;
-use kdeconnect_dbus::plugins::{parse_conversations, ConversationsProxy, SmsProxy};
+use kdeconnect_dbus::plugins::{ConversationsProxy, SmsProxy};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use zbus::Connection;
@@ -153,53 +153,5 @@ pub async fn request_attachment_async(
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    }
-}
-
-/// Prefetch SMS conversations for a device (best-effort, fire-and-forget).
-///
-/// Calls `activeConversations()` once and returns whatever is cached.
-/// Does NOT start signal subscriptions or fire `requestAllConversationThreads()`.
-/// Used by `SelectDevice` to have conversations ready before the user opens SMS.
-pub async fn prefetch_conversations_async(
-    conn: Arc<Mutex<Connection>>,
-    device_id: String,
-) -> Message {
-    let conn = conn.lock().await;
-    let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
-
-    let conversations_proxy = match ConversationsProxy::builder(&conn)
-        .path(device_path.as_str())
-        .ok()
-        .map(|b| b.build())
-    {
-        Some(fut) => match fut.await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::debug!("SMS prefetch: failed to create proxy: {}", e);
-                return Message::SmsPrefetchReady(device_id, Vec::new());
-            }
-        },
-        None => {
-            tracing::debug!("SMS prefetch: failed to build proxy path");
-            return Message::SmsPrefetchReady(device_id, Vec::new());
-        }
-    };
-
-    match conversations_proxy.active_conversations().await {
-        Ok(values) => {
-            let mut conversations = parse_conversations(values);
-            conversations.sort_by_key(|c| std::cmp::Reverse(c.timestamp));
-            tracing::debug!(
-                "SMS prefetch: {} conversations for device {}",
-                conversations.len(),
-                device_id
-            );
-            Message::SmsPrefetchReady(device_id, conversations)
-        }
-        Err(e) => {
-            tracing::debug!("SMS prefetch: activeConversations failed: {}", e);
-            Message::SmsPrefetchReady(device_id, Vec::new())
-        }
     }
 }
