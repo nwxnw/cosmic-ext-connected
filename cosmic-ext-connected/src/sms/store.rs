@@ -1504,52 +1504,49 @@ impl SmsConversationStore {
 
                 // Show notification asynchronously
                 (
-                    cosmic::app::Task::perform(
-                        async move {
-                            // Build summary: resolve sender name if needed and not already cached
-                            let summary = if show_sender {
-                                let sender_name = match cached_sender_name {
-                                    Some(name) => name,
-                                    None => {
-                                        let contacts =
-                                            ContactLookup::load_for_device(&device_id).await;
-                                        contacts.get_group_display_name(&addresses, 3)
-                                    }
-                                };
-                                if sender_name.is_empty() {
-                                    fl!("sms-notification-title")
-                                } else {
-                                    fl!("sms-notification-title-from", sender = sender_name)
+                    cosmic::Task::future(async move {
+                        // Build summary: resolve sender name if needed and not already cached
+                        let summary = if show_sender {
+                            let sender_name = match cached_sender_name {
+                                Some(name) => name,
+                                None => {
+                                    let contacts = ContactLookup::load_for_device(&device_id).await;
+                                    contacts.get_group_display_name(&addresses, 3)
                                 }
-                            } else {
+                            };
+                            if sender_name.is_empty() {
                                 fl!("sms-notification-title")
-                            };
-
-                            let body = if show_content {
-                                message_body
                             } else {
-                                fl!("sms-notification-body-hidden")
-                            };
-
-                            let mut notification = notify_rust::Notification::new();
-                            notification
-                                .summary(&summary)
-                                .body(&body)
-                                .icon("phone-symbolic")
-                                .appname("Connected")
-                                .timeout(notify_rust::Timeout::Milliseconds(
-                                    NORMAL_NOTIFICATION_TIMEOUT_MS,
-                                ));
-                            match tokio::task::spawn_blocking(move || notification.show()).await {
-                                Ok(Ok(_handle)) => tracing::debug!("SMS notification shown"),
-                                Ok(Err(e)) => {
-                                    tracing::warn!("Failed to show SMS notification: {}", e)
-                                }
-                                Err(e) => tracing::warn!("SMS notification task panicked: {}", e),
+                                fl!("sms-notification-title-from", sender = sender_name)
                             }
-                        },
-                        |_| cosmic::Action::App(Message::RefreshDevices),
-                    ),
+                        } else {
+                            fl!("sms-notification-title")
+                        };
+
+                        let body = if show_content {
+                            message_body
+                        } else {
+                            fl!("sms-notification-body-hidden")
+                        };
+
+                        let mut notification = notify_rust::Notification::new();
+                        notification
+                            .summary(&summary)
+                            .body(&body)
+                            .icon("phone-symbolic")
+                            .appname("Connected")
+                            .timeout(notify_rust::Timeout::Milliseconds(
+                                NORMAL_NOTIFICATION_TIMEOUT_MS,
+                            ));
+                        match tokio::task::spawn_blocking(move || notification.show()).await {
+                            Ok(Ok(_handle)) => tracing::debug!("SMS notification shown"),
+                            Ok(Err(e)) => {
+                                tracing::warn!("Failed to show SMS notification: {}", e)
+                            }
+                            Err(e) => tracing::warn!("SMS notification task panicked: {}", e),
+                        }
+                    })
+                    .discard(),
                     SmsReply::NoOp,
                 )
             }

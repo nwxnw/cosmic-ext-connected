@@ -1322,12 +1322,10 @@ impl Application for ConnectApplet {
                 self.set_view(ViewMode::DeviceList);
             }
             Message::OpenUrl(url) => {
-                return cosmic::app::Task::perform(
-                    async move {
-                        let _ = tokio::process::Command::new("xdg-open").arg(url).spawn();
-                    },
-                    |_| cosmic::Action::App(Message::RefreshDevices),
-                );
+                return cosmic::Task::future(async move {
+                    let _ = tokio::process::Command::new("xdg-open").arg(url).spawn();
+                })
+                .discard();
             }
             Message::ToggleSetting(key) => {
                 match key {
@@ -1823,24 +1821,22 @@ impl Application for ConnectApplet {
                 );
 
                 // Show notification
-                return cosmic::app::Task::perform(
-                    async move {
-                        let mut notification = notify_rust::Notification::new();
-                        notification
-                            .summary(&summary)
-                            .body(&device_name)
-                            .icon(icon)
-                            .appname("Connected")
-                            .urgency(urgency)
-                            .timeout(notify_rust::Timeout::Milliseconds(timeout_ms));
-                        match tokio::task::spawn_blocking(move || notification.show()).await {
-                            Ok(Ok(_handle)) => tracing::debug!("Call notification shown"),
-                            Ok(Err(e)) => tracing::warn!("Failed to show call notification: {}", e),
-                            Err(e) => tracing::warn!("Call notification task panicked: {}", e),
-                        }
-                    },
-                    |_| cosmic::Action::App(Message::RefreshDevices),
-                );
+                return cosmic::Task::future(async move {
+                    let mut notification = notify_rust::Notification::new();
+                    notification
+                        .summary(&summary)
+                        .body(&device_name)
+                        .icon(icon)
+                        .appname("Connected")
+                        .urgency(urgency)
+                        .timeout(notify_rust::Timeout::Milliseconds(timeout_ms));
+                    match tokio::task::spawn_blocking(move || notification.show()).await {
+                        Ok(Ok(_handle)) => tracing::debug!("Call notification shown"),
+                        Ok(Err(e)) => tracing::warn!("Failed to show call notification: {}", e),
+                        Err(e) => tracing::warn!("Call notification task panicked: {}", e),
+                    }
+                })
+                .discard();
             }
 
             // File Notifications
@@ -1868,27 +1864,25 @@ impl Application for ConnectApplet {
                     let summary = fl!("file-received-from", device = device_name.clone());
                     let file_name_clone = file_name.clone();
 
-                    return cosmic::app::Task::perform(
-                        async move {
-                            let mut notification = notify_rust::Notification::new();
-                            notification
-                                .summary(&summary)
-                                .body(&file_name_clone)
-                                .icon("folder-download-symbolic")
-                                .appname("Connected")
-                                .timeout(notify_rust::Timeout::Milliseconds(
-                                    NORMAL_NOTIFICATION_TIMEOUT_MS,
-                                ));
-                            match tokio::task::spawn_blocking(move || notification.show()).await {
-                                Ok(Ok(_handle)) => tracing::debug!("File notification shown"),
-                                Ok(Err(e)) => {
-                                    tracing::warn!("Failed to show file notification: {}", e)
-                                }
-                                Err(e) => tracing::warn!("File notification task panicked: {}", e),
+                    return cosmic::Task::future(async move {
+                        let mut notification = notify_rust::Notification::new();
+                        notification
+                            .summary(&summary)
+                            .body(&file_name_clone)
+                            .icon("folder-download-symbolic")
+                            .appname("Connected")
+                            .timeout(notify_rust::Timeout::Milliseconds(
+                                NORMAL_NOTIFICATION_TIMEOUT_MS,
+                            ));
+                        match tokio::task::spawn_blocking(move || notification.show()).await {
+                            Ok(Ok(_handle)) => tracing::debug!("File notification shown"),
+                            Ok(Err(e)) => {
+                                tracing::warn!("Failed to show file notification: {}", e)
                             }
-                        },
-                        |_| cosmic::Action::App(Message::RefreshDevices),
-                    );
+                            Err(e) => tracing::warn!("File notification task panicked: {}", e),
+                        }
+                    })
+                    .discard();
                 }
             }
 
