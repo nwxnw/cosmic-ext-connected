@@ -1458,6 +1458,9 @@ impl SmsConversationStore {
             }
 
             Message::SmsNotificationReceived(device_id, message) => {
+                if !ctx.config.sms_notifications {
+                    return (cosmic::app::Task::none(), SmsReply::NoOp);
+                }
                 // Freshness check: only notify for messages received within the last 30 seconds.
                 // This prevents false notifications when fetching historical messages and handles
                 // cross-process deduplication (COSMIC spawns multiple applet instances).

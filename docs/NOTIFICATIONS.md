@@ -8,7 +8,7 @@ Shows desktop notifications when new SMS messages are received.
 
 ### Implementation
 
-1. **D-Bus Signal**: Separate subscription listens for `conversationUpdated` signals from `org.kde.kdeconnect.device.conversations`
+1. **D-Bus Signal**: `conversationUpdated` from `org.kde.kdeconnect.device.conversations`, handled in the main `dbus_signal_subscription` alongside call and file signals
 
 2. **Message Filtering**: Only incoming messages notified (MessageType::Inbox)
 
@@ -32,13 +32,9 @@ notify_rust::Notification::new()
     .show()
 ```
 
-### Subscription Lifecycle
+### Gating
 
-Active when:
-- `config.sms_notifications` is enabled
-- At least one device is both reachable AND paired
-
-Auto-reconnects on D-Bus disconnection.
+There is no separate subscription. The main D-Bus subscription yields the signal and the `update()` arm drops it unless `config.sms_notifications` is on. Calls (`config.call_notifications`) and files (`config.file_notifications`) work the same way.
 
 ## Call Notifications
 

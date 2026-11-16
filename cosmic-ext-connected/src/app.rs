@@ -17,9 +17,7 @@ use crate::media::{
     MediaControlsParams,
 };
 use crate::sms::{ReplySend, SmsConversationStore, SmsViewMode};
-use crate::subscriptions::{
-    call_notification_subscription, dbus_signal_subscription, sms_notification_subscription,
-};
+use crate::subscriptions::dbus_signal_subscription;
 use crate::ui;
 use crate::views::send_to::{view_send_to, view_share_text, SendToParams, ShareTextParams};
 use crate::views::settings::{view_about, view_settings};
@@ -49,8 +47,6 @@ pub enum Message {
     PopupClosed(window::Id),
     /// (output name, logical height) from a Wayland output event
     OutputHeight(String, f32),
-    /// Refresh device list
-    RefreshDevices,
     /// Prod the daemon to re-scan the network, then refresh (manual Refresh button)
     ForceReconnect,
     /// Retry reaching KDE Connect from an error empty-list card. Re-establishes
@@ -281,7 +277,7 @@ pub enum Message {
     // Call Notifications
     /// Incoming or missed call received via D-Bus signal
     CallNotification {
-        device_name: String,
+        device_id: String,
         event: String,
         phone_number: String,
         contact_name: String,
@@ -811,16 +807,6 @@ impl Application for ConnectApplet {
                     ),
                     None => Self::connect_dbus_task(),
                 };
-            }
-            Message::RefreshDevices => {
-                if let Some(conn) = &self.dbus_connection {
-                    tracing::debug!("Refreshing device list");
-                    self.loading = true;
-                    return cosmic::app::Task::perform(
-                        fetch_devices_async(conn.clone()),
-                        cosmic::Action::App,
-                    );
-                }
             }
             Message::DevicesUpdated(devices) => {
                 // If the SMS device just came back reachable, the daemon likely restarted
@@ -1764,11 +1750,20 @@ impl Application for ConnectApplet {
 
             // Call Notifications
             Message::CallNotification {
-                device_name,
+                device_id,
                 event,
                 phone_number,
                 contact_name,
             } => {
+                if !self.config.call_notifications {
+                    return cosmic::app::Task::none();
+                }
+                let device_name = self
+                    .devices
+                    .iter()
+                    .find(|d| d.id == device_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or(device_id);
                 // Build notification based on event type and privacy settings
                 let (summary, icon, urgency, timeout_ms) = match event.as_str() {
                     "callReceived" => {
@@ -2137,25 +2132,11 @@ impl Application for ConnectApplet {
             );
         }
 
-        // Add SMS notification subscription when enabled and devices are connected
-        if self.config.sms_notifications
-            && self.devices.iter().any(|d| d.is_reachable && d.is_paired)
-        {
-            subscriptions.push(Subscription::run(sms_notification_subscription));
-        }
-
-        // Add call notification subscription when enabled and devices are connected
-        if self.config.call_notifications
-            && self.devices.iter().any(|d| d.is_reachable && d.is_paired)
-        {
-            subscriptions.push(Subscription::run(call_notification_subscription));
-        }
-
         // SMS-state-driven subscriptions (conversation list + per-thread messages)
         subscriptions.extend(self.sms.subscriptions());
 
-        // Note: File notifications are handled in the main dbus_signal_subscription
-        // to avoid issues with multiple D-Bus connections and match rules
+        // Note: SMS, call and file notifications are all handled in
+        // dbus_signal_subscription, which already receives every daemon signal.
 
         Subscription::batch(subscriptions)
     }
