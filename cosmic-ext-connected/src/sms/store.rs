@@ -11,7 +11,7 @@ use crate::constants::sms::{
 use crate::fl;
 use crate::sms::logical::{merge_into_logical, split_candidate_thread_ids, LogicalConversation};
 use crate::sms::{
-    conversation_list_subscription, request_attachment_async, request_older_messages_async,
+    conversation_list_subscription, request_attachment_async, request_conversation_range_async,
     send_new_sms_async, send_sms_async, view_conversation_list, view_message_thread,
     view_new_message, ConversationListParams, MessageThreadParams, NewMessageParams,
 };
@@ -471,12 +471,11 @@ impl SmsConversationStore {
             .iter()
             .map(|&(t, loaded_t)| {
                 cosmic::app::Task::perform(
-                    request_older_messages_async(
+                    request_conversation_range_async(
                         conn.clone(),
                         device_id.clone(),
                         t,
-                        loaded_t,
-                        MESSAGES_PER_PAGE,
+                        loaded_t + MESSAGES_PER_PAGE,
                     ),
                     cosmic::Action::App,
                 )
@@ -844,10 +843,10 @@ impl SmsConversationStore {
             }
 
             // === Batch 2: Message thread / scroll / bubble ===
-            Message::OlderMessagesRequested { thread_id, ok } => {
+            Message::ConversationRangeRequested { thread_id, ok } => {
                 if !ok {
                     // Fire failed: abort the page so the spinner clears and the user can
-                    // retry by scrolling. has_more left as-is (still true), so retry works
+                    // retry with Load older. has_more left as-is (still true), so retry works
                     tracing::warn!(
                         "Older-page request failed for thread {}, aborting page",
                         thread_id
@@ -859,7 +858,7 @@ impl SmsConversationStore {
                         self.sms_loading_state = SmsLoadingState::Idle;
                     }
                 }
-                // ok == true; wait for streamed messages / ConversationStoreLoaded
+                // ok == true; wait for the streamed signals
                 (cosmic::app::Task::none(), SmsReply::NoOp)
             }
 
@@ -1049,25 +1048,22 @@ impl SmsConversationStore {
                 }
                 (settle, SmsReply::NoOp)
             }
-            Message::ConversationStoreLoaded {
-                thread_id,
-                total_count,
-            } => {
+            Message::ConversationLoaded { thread_id, count } => {
                 // `conversationLoaded` arrived - scroll to show messages while the page (on
                 // a fetch) and any later phone data stream in. Each fanned-out subscription
-                // emits its own ConversationStoreLoaded; accept any signal whose thread is
+                // emits its own ConversationLoaded; accept any signal whose thread is
                 // in the open merged set.
                 if !self.current_merged_thread_ids.contains(&thread_id) {
                     return (cosmic::app::Task::none(), SmsReply::NoOp);
                 }
 
-                let grew = total_count > 0
+                let grew = count > 0
                     && self
                         .last_count
                         .get(&thread_id)
-                        .is_none_or(|&prev| total_count > prev);
-                if total_count > 0 {
-                    self.last_count.insert(thread_id, total_count);
+                        .is_none_or(|&prev| count > prev);
+                if count > 0 {
+                    self.last_count.insert(thread_id, count);
                 }
 
                 // During an older page this records whether the count grew; the thread
@@ -1079,7 +1075,7 @@ impl SmsConversationStore {
                     .filter(|l| l.pending.contains(&thread_id))
                 {
                     // Before the cache burst (`served == 0`) this is another request's signal
-                    if total_count > 0 && load.served.get(&thread_id).is_some_and(|&s| s > 0) {
+                    if count > 0 && load.served.get(&thread_id).is_some_and(|&s| s > 0) {
                         *load.grew.entry(thread_id).or_insert(false) |= grew;
                     }
                     return (
@@ -1092,7 +1088,7 @@ impl SmsConversationStore {
                     "conversationLoaded for thread {}: {} messages displayed across the merged set, daemon holds {} for this thread",
                     thread_id,
                     self.messages.len(),
-                    total_count
+                    count
                 );
 
                 // Update pagination state via helper (handles merged-set math).
@@ -1105,8 +1101,8 @@ impl SmsConversationStore {
                 // not "empty" (daemon quirk) — fall back to the per-thread page
                 // heuristic so a late-arriving 0 can't latch has_more false and
                 // kill the first scroll's prefetch.
-                let has_more_t = if total_count > 0 {
-                    loaded_t < total_count
+                let has_more_t = if count > 0 {
+                    loaded_t < count
                 } else {
                     loaded_t >= MESSAGES_PER_PAGE as u64
                 };

@@ -1060,9 +1060,9 @@ pub fn conversation_message_subscription(
                                                                 );
                                                             }
                                                             return Some((
-                                                                Message::ConversationStoreLoaded {
+                                                                Message::ConversationLoaded {
                                                                     thread_id,
-                                                                    total_count: message_count,
+                                                                    count: message_count,
                                                                 },
                                                                 ConversationMessageState::Listening {
                                                                     conn,

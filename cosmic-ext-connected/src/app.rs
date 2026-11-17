@@ -215,9 +215,9 @@ pub enum Message {
     },
     /// New message send result
     NewMessageSendResult(Result<(), String>),
-    /// Ack that an older-page `requestConversation` was fired (`ok`) or failed.
-    /// Carries no messages - those stream in via `ConversationMessagesReceived`.
-    OlderMessagesRequested {
+    /// Ack that a `requestConversation` range was fired (`ok`) or failed.
+    /// Carries no messages; those stream in via `ConversationMessageReceived`.
+    ConversationRangeRequested {
         thread_id: i64,
         ok: bool,
     },
@@ -297,11 +297,11 @@ pub enum Message {
         thread_id: i64,
         message: SmsMessage,
     },
-    /// `conversationLoaded` arrived: the daemon holds `total_count` for this thread.
-    /// Scroll to newest and keep listening; on a fetch the page follows this signal.
-    ConversationStoreLoaded {
+    /// `conversationLoaded`: the phone delivered a batch and the daemon now knows
+    /// `count` uids for the thread, an upper bound on what its cache can serve.
+    ConversationLoaded {
         thread_id: i64,
-        total_count: u64,
+        count: u64,
     },
     /// Initial load complete (page target met, or a clock fired with it unfilled).
     /// Finalize; the subscription keeps listening until the conversation closes.
@@ -1892,7 +1892,7 @@ impl Application for ConnectApplet {
             | Message::ConversationSyncStarted { .. }
             | Message::ConversationSyncComplete { .. }
             | Message::ConversationListStreamEnded { .. }
-            | Message::OlderMessagesRequested { .. }
+            | Message::ConversationRangeRequested { .. }
             | Message::LoadOlderMessages
             | Message::BubblePressStarted { .. }
             | Message::BubblePressReleased
@@ -1901,7 +1901,7 @@ impl Application for ConnectApplet {
             | Message::ConversationLoadStarted { .. }
             | Message::ConversationsBatchReceived { .. }
             | Message::ConversationMessageReceived { .. }
-            | Message::ConversationStoreLoaded { .. }
+            | Message::ConversationLoaded { .. }
             | Message::ConversationLoadComplete { .. }
             | Message::SmsError(_)
             | Message::SmsComposeAction(_)
