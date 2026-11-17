@@ -857,6 +857,10 @@ impl Application for ConnectApplet {
                             // `messages` becomes the union of pre- and post-restart
                             // data.
                             self.sms.reset_thread_state();
+                            // Show the reload as an open does; not as an empty conversation
+                            self.sms.sms_loading_state =
+                                SmsLoadingState::LoadingMessages(LoadingPhase::Connecting);
+                            self.sms.message_sync_active = false;
                             self.sms.conversation_message_subscription_generation = self
                                 .sms
                                 .conversation_message_subscription_generation

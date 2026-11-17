@@ -166,7 +166,8 @@ The message bump also resets the thread's load bookkeeping (`messages`, `known_m
 `thread_has_more`, `older_page`, `messages_has_more`, `initial_load_complete`), mirroring
 `OpenConversation`. Without it the re-streamed page dedups against stale uids and `messages`
 becomes the union of pre- and post-restart data — so a recovered thread is a fresh first page, not
-a merge.
+a merge. It sets the same loading state the open does, so the view shows the loading text, not
+"No messages", until the page returns.
 
 A daemon exit is also detected directly: `NameOwnerChanged` for `org.kde.kdeconnect` with an empty
 new owner marks every device unreachable at once, so the edge is observed even when the daemon is
