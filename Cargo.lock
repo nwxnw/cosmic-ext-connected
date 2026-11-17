@@ -966,7 +966,6 @@ dependencies = [
  "notify-rust",
  "rust-embed",
  "serde",
- "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -2795,7 +2794,6 @@ version = "0.10.0"
 dependencies = [
  "dirs",
  "serde",
- "serde_json",
  "tokio",
  "tracing",
  "zbus 5.19.0",
