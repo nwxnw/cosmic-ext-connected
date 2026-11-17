@@ -303,12 +303,6 @@ pub enum Message {
         thread_id: i64,
         count: u64,
     },
-    /// Initial load complete (page target met, or a clock fired with it unfilled).
-    /// Finalize; the subscription keeps listening until the conversation closes.
-    ConversationLoadComplete {
-        thread_id: i64,
-        total_count: u64,
-    },
     /// Fire-and-forget D-Bus request completed, start listening for signals
     ConversationLoadStarted {
         thread_id: i64,
@@ -1902,7 +1896,6 @@ impl Application for ConnectApplet {
             | Message::ConversationsBatchReceived { .. }
             | Message::ConversationMessageReceived { .. }
             | Message::ConversationLoaded { .. }
-            | Message::ConversationLoadComplete { .. }
             | Message::SmsError(_)
             | Message::SmsComposeAction(_)
             | Message::SendSms
