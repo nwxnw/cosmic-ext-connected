@@ -1443,6 +1443,7 @@ impl Application for ConnectApplet {
                 self.sms.sms_loading_state = SmsLoadingState::Idle;
                 self.sms.conversation_sync_active = false;
                 self.sms.new_message_sync_active = false;
+                self.sms.conversation_load_active = false;
                 self.sms.conversation_list_subscription_active = false;
                 self.sms.sms_compose_text = widget::text_editor::Content::new();
                 self.sms.pending_attachment = None;
