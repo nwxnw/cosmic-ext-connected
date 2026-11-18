@@ -112,6 +112,10 @@ load-older = Ladda äldre meddelanden
 syncing = Synkroniserar med telefonen...
 syncing-conversations = Synkroniserar konversationer...
 hold-to-copy = Håll nedtryckt för att kopiera
+# TODO: translate
+sms-not-confirmed = Not confirmed by your phone
+# TODO: translate
+sms-not-confirmed-excerpt = Not confirmed by your phone: "{ $excerpt }"
 
 # Nytt meddelande
 new-message = Nytt meddelande

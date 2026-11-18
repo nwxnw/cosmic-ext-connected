@@ -111,6 +111,10 @@ load-older = Načíst starší zprávy
 syncing = Synchronizování s telefonem...
 syncing-conversations = Synchronizování konverzací...
 hold-to-copy = Podržte pro zkopírování
+# TODO: translate
+sms-not-confirmed = Not confirmed by your phone
+# TODO: translate
+sms-not-confirmed-excerpt = Not confirmed by your phone: "{ $excerpt }"
 
 # New message
 new-message = Nová zpráva

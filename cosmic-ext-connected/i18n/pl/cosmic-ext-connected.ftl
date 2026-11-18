@@ -111,6 +111,10 @@ load-older = Załaduj wcześniejsze wiadomości
 syncing = Synchronizowanie z telefonem...
 syncing-conversations = Synchronizowanie rozmów...
 hold-to-copy = Przytrzymaj aby skopiować
+# TODO: translate
+sms-not-confirmed = Not confirmed by your phone
+# TODO: translate
+sms-not-confirmed-excerpt = Not confirmed by your phone: "{ $excerpt }"
 
 # New message
 new-message = Nowa wiadomość
