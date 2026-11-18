@@ -112,7 +112,7 @@ syncing = Synchronizowanie z telefonem…
 syncing-conversations = Synchronizowanie rozmów…
 hold-to-copy = Przytrzymaj aby skopiować
 sms-not-confirmed = Brak potwierdzenia przez twój telefon
-sms-not-confirmed-excerpt = Brak potwierdzenia przez twój telefon: "{ $excerpt }"
+sms-not-confirmed-excerpt = Brak potwierdzenia przez twój telefon: „{ $excerpt }”
 
 # New message
 new-message = Nowa wiadomość
