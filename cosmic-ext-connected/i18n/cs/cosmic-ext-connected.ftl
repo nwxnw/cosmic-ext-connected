@@ -111,10 +111,8 @@ load-older = Načíst starší zprávy
 syncing = Synchronizování s telefonem...
 syncing-conversations = Synchronizování konverzací...
 hold-to-copy = Podržte pro zkopírování
-# TODO: translate
-sms-not-confirmed = Not confirmed by your phone
-# TODO: translate
-sms-not-confirmed-excerpt = Not confirmed by your phone: "{ $excerpt }"
+sms-not-confirmed = Telefon nepotvrdil doručení
+sms-not-confirmed-excerpt = Telefon nepotvrdil doručení: „{ $excerpt }“
 
 # New message
 new-message = Nová zpráva
@@ -143,38 +141,27 @@ dismiss = Zavřít
 
 # Errors and status
 sms-failed = Odeslání zprávy selhalo
-# TODO: translate
-sms-load-failed = Failed to load messages
-# TODO: translate
-sending-ping = Sending ping...
+sms-load-failed = Nepodařilo se načíst zprávy
+sending-ping = Odesílání pingu...
 ping-sent = Ping odeslán!
 ping-failed = Odeslání pingu selhalo
-# TODO: translate
-sharing-file = Sharing file...
-# TODO: translate
-sharing-text = Sharing text...
+sharing-file = Sdílení souboru...
+sharing-text = Sdílení textu...
 share-complete = Sdílení dokončeno
 share-failed = Sdílení selhalo
 pairing-request-sent = Žádost o spárování odeslána...
-# TODO: translate
-pairing-accept-on-device = Pairing request sent. Accept it on your device.
+pairing-accept-on-device = Žádost o spárování byla odeslána. Přijměte ji na svém zařízení.
 pairing-accepted = Párování přijato
 pairing-rejected = Párování odmítnuto
-# TODO: translate
-unpairing = Unpairing...
+unpairing = Rušení párování...
 unpaired = Párování se zařízením zrušeno
-# TODO: translate
-accepting-pairing = Accepting pairing...
-# TODO: translate
-rejecting-pairing = Rejecting pairing...
-# TODO: translate
-sending-clipboard = Sending clipboard...
+accepting-pairing = Přijímání žádosti o spárování...
+rejecting-pairing = Odmítání žádosti o spárování...
+sending-clipboard = Odesílání obsahu schránky...
 clipboard-sent = Schránka odeslána!
 clipboard-failed = Odeslání schránky selhalo
-# TODO: translate
-dismiss-failed = Failed to dismiss notification
-# TODO: translate
-media-failed = Media control failed
+dismiss-failed = Nepodařilo se zavřít oznámení
+media-failed = Ovládání médií selhalo
 
 # Daemon errors
 daemon-unreachable = Nelze se připojit ke KDE Connect
