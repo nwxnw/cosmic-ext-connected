@@ -44,10 +44,11 @@
       <li xml:lang="sv">SMS meddelandehantering med konversationstrådar</li>
 
       <li>Send photos and files with your messages</li>
+      <li xml:lang="cs">Odesílání fotek a souborů společně se zprávami</li>
       <li xml:lang="sv">Skicka foton och filer med dina meddelanden</li>
 
       <li>Smart SMS threading that reunites conversations Android splits into multiple threads when someone reacts from an iPhone</li>
-      <li xml:lang="cs">Chytré SMS vlákno, které slučuje konverzace a reakce z iOS rozdělené do více vláken na Androidu</li>
+      <li xml:lang="cs">Chytré slučování SMS konverzací, které Android rozděluje do více vláken po reakcích uživatelů iPhonu</li>
       <li xml:lang="pl">Sprytne wątki SMSowe, które łączą rozmowy. Reakcje iOS podzielone w odzielne wątki na Androidzie</li>
       <li xml:lang="sv">Smart SMS-trådning som slår samman konversationer; reaktioner från iOS delas upp i flera trådar på Android</li>
 
