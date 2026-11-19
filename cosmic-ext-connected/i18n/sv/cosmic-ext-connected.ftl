@@ -94,14 +94,13 @@ notification-duplicate-hint = Inkommande SMS och samtal kan också utlösa KDE C
 learn-more = Läs mer
 
 # Inställningar för SMS-aviseringar
-settings-sms-notifications = SMS-aviseringar
-settings-sms-show-content = Visa meddelandeinnehåll
-settings-sms-show-sender = Visa avsändarnamn
+settings-sms-section = SMS meddelanden
+settings-sms-notifications = Visa aviseringar
+settings-sms-show-sender = Visa avsändare
 
 # Inställningar för samtalsaviseringar
 settings-call-notifications = Samtalsaviseringar
 settings-call-show-number = Visa telefonnummer
-settings-call-show-name = Visa uppringarens namn
 
 # SMS Aviseringstext
 sms-notification-title = Nytt SMS
@@ -115,7 +114,8 @@ missed-call = Missat samtal
 missed-call-from = Missat samtal från { $name }
 
 # Inställningar för filaviseringar
-settings-file-notifications = Filaviseringar
+settings-file-section = Filöverföringar
+settings-file-notifications = Visa aviseringar
 
 # Filmeddelandetext
 file-received = Fil mottagen
