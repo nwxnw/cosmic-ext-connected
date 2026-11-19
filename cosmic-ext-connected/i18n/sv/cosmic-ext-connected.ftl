@@ -136,6 +136,8 @@ load-older = Ladda äldre meddelanden
 syncing = Synkroniserar med telefonen...
 syncing-conversations = Synkroniserar konversationer...
 hold-to-copy = Håll nedtryckt för att kopiera
+sms-not-confirmed = Inte bekräftat av din telefon
+sms-not-confirmed-excerpt = Inte bekräftat av din telefon: "{ $excerpt }"
 
 # Nytt meddelande
 new-message = Nytt meddelande
@@ -166,17 +168,28 @@ dismiss = Avfärda
 no-notifications = Inga aviseringar
 
 # Fel och status
+sms-failed = Misslyckades med att skicka meddelande
+sms-failed = Misslyckades med att skicka meddelande
+sms-sent = Meddelande skickat!
+sms-load-failed = Misslyckades med att ladda meddelanden
+sending-ping = Skickar ping...
 ping-sent = Ping skickat!
 ping-failed = Misslyckades med att skicka ping
+sharing-text = Delar text...
 share-complete = Delning är slutförd
 share-failed = Misslyckades att dela
+sending-clipboard = Skickar urklipp...
 clipboard-sent = Urklipp skickat!
 clipboard-failed = Misslyckades med att skicka urklipp
-sms-sent = Meddelande skickat!
-sms-failed = Misslyckades med att skicka meddelande
+dismiss-failed = Misslyckades att stänga aviseringen
+media-failed = Mediekontroll misslyckades
+pairing-accept-on-device = Parningsförfrågan skickad. Acceptera den på din enhet.
 pairing-accepted = Parkoppling accepterad
 pairing-rejected = Parkoppling avvisad
+unpairing = Avparar...
 unpaired = Avparad från enhet
+accepting-pairing = Accepterar parkoppling...
+rejecting-pairing = Avvisar parkoppling...
 
 # Daemon-fel
 daemon-unreachable = Kan inte ansluta till KDE Connect
