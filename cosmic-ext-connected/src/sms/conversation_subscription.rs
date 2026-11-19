@@ -85,8 +85,12 @@ pub fn conversation_list_subscription(
                         {
                             Ok(c) => c,
                             Err(e) => {
+                                tracing::error!(
+                                    "Conversation list: D-Bus session connect failed: {}",
+                                    e
+                                );
                                 return Some((
-                                    Message::SmsError(format!("D-Bus connection failed: {}", e)),
+                                    Message::SmsError(e.to_string()),
                                     ConversationListState::Done,
                                 ));
                             }
@@ -96,8 +100,9 @@ pub fn conversation_list_subscription(
                     let dbus_proxy = match zbus::fdo::DBusProxy::new(&conn).await {
                         Ok(p) => p,
                         Err(e) => {
+                            tracing::error!("Conversation list: D-Bus proxy failed: {}", e);
                             return Some((
-                                Message::SmsError(format!("D-Bus proxy failed: {}", e)),
+                                Message::SmsError(e.to_string()),
                                 ConversationListState::Done,
                             ));
                         }
@@ -165,11 +170,9 @@ pub fn conversation_list_subscription(
                     {
                         Ok(p) => p,
                         Err(e) => {
+                            tracing::error!("Conversation list: conversations proxy failed: {}", e);
                             return Some((
-                                Message::SmsError(format!(
-                                    "Failed to create conversations proxy: {}",
-                                    e
-                                )),
+                                Message::SmsError(e.to_string()),
                                 ConversationListState::Done,
                             ));
                         }

@@ -88,20 +88,16 @@ pub async fn media_action_async(
         device_id
     );
 
-    let proxy = match MprisRemoteProxy::builder(&conn)
-        .path(path.as_str())
-        .ok()
-        .map(|b| b.build())
+    let proxy = match async {
+        MprisRemoteProxy::builder(&conn)
+            .path(path.as_str())?
+            .build()
+            .await
+    }
+    .await
     {
-        Some(fut) => match fut.await {
-            Ok(p) => p,
-            Err(e) => {
-                return Message::MediaActionResult(Err(format!("Failed to create proxy: {}", e)));
-            }
-        },
-        None => {
-            return Message::MediaActionResult(Err("Failed to build proxy path".to_string()));
-        }
+        Ok(p) => p,
+        Err(e) => return Message::MediaActionResult(Err(e.to_string())),
     };
 
     // If a specific player is requested, ensure it's selected first
@@ -122,6 +118,6 @@ pub async fn media_action_async(
 
     match result {
         Ok(()) => Message::MediaActionResult(Ok("OK".to_string())),
-        Err(e) => Message::MediaActionResult(Err(format!("Action failed: {}", e))),
+        Err(e) => Message::MediaActionResult(Err(e.to_string())),
     }
 }

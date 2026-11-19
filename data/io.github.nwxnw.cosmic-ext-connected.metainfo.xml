@@ -44,10 +44,11 @@
       <li xml:lang="sv">SMS meddelandehantering med konversationstrådar</li>
 
       <li>Send photos and files with your messages</li>
+      <li xml:lang="cs">Odesílání fotek a souborů společně se zprávami</li>
       <li xml:lang="sv">Skicka foton och filer med dina meddelanden</li>
 
-      <li>Smart SMS threading that merges conversations iOS reactions split into multiple threads on Android</li>
-      <li xml:lang="cs">Chytré SMS vlákno, které slučuje konverzace a reakce z iOS rozdělené do více vláken na Androidu</li>
+      <li>Smart SMS threading that reunites conversations Android splits into multiple threads when someone reacts from an iPhone</li>
+      <li xml:lang="cs">Chytré slučování SMS konverzací, které Android rozděluje do více vláken po reakcích uživatelů iPhonu</li>
       <li xml:lang="pl">Sprytne wątki SMSowe, które łączą rozmowy. Reakcje iOS podzielone w odzielne wątki na Androidzie</li>
       <li xml:lang="sv">Smarta SMS-trådar som sammanfogar konversationer, iOS-reaktioner delas upp i flera trådar på Android</li>
 
@@ -118,7 +119,7 @@
       <caption>Connected applet showing device page</caption>
       <caption xml:lang="cs">Applet Connected zobrazující stránku se zařízeními</caption>
       <caption xml:lang="pl">Aplet Connected pokazuje stronę z urządzeniami</caption>
-      <caption xml:lang="sv">Ansluten applet som visar enhetssidan</caption>
+      <caption xml:lang="sv">Appleten Connected visar enhetssidan</caption>
     </screenshot>
   </screenshots>
   <content_rating type="oars-1.1" />

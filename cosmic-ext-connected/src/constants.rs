@@ -50,25 +50,6 @@ pub mod sms {
     /// already holds a cached list. Dismissal only; the stream keeps ingesting after it.
     pub const CONVERSATION_TIMEOUT_CACHED_SECS: u64 = 3;
 
-    /// No-signal net for a thread load (seconds). Restarted by every received
-    /// message and disarmed by `conversationLoaded`, so it fires only when the
-    /// daemon goes silent before answering: the phone never responds, or a
-    /// >= 26.08.0 daemon has nothing cached for the thread and emits nothing.
-    pub const MESSAGE_SUBSCRIPTION_TIMEOUT_SECS: u64 = 20;
-
-    /// Window after `conversationLoaded` (milliseconds). The page normally follows
-    /// that signal within a millisecond and completes the load on the received
-    /// count; this fires only when the page never fills, and with at most one
-    /// message received it triggers the one-shot retry instead.
-    pub const PHONE_RESPONSE_TIMEOUT_MS: u64 = 8000;
-
-    /// Settle window for the one-shot retried Conversations-interface read
-    /// (milliseconds), fired when `PHONE_RESPONSE_TIMEOUT_MS` elapses with at most
-    /// one message received. The daemon inserts the phone batch before it emits
-    /// `conversationLoaded`, so the re-read pages the full thread; this only
-    /// bounds how long the load waits for those signals.
-    pub const CONVERSATION_RETRY_WAIT_MS: u64 = 4000;
-
     /// How long to show the sync indicator on cold start (milliseconds).
     /// This is the hard ceiling for a single bootstrap attempt while loading
     /// the conversation list on cold start.
@@ -94,6 +75,10 @@ pub mod sms {
     /// Bound retries for a transient `request_conversion` rejection (busy /
     /// briefly-unavailable daemon) before surfacing SmsError. Each waits RETRY_DELAY_SECS
     pub const MAX_MESSAGE_LOAD_RETRIES: u8 = 3;
+
+    /// How long the reply caption reads "Sending..." before it relabels to
+    /// "Not confirmed by your phone". A late echo still clears it. See docs/SMS.md.
+    pub const SEND_ECHO_WINDOW_SECS: u64 = 60;
 }
 
 /// Popup geometry.

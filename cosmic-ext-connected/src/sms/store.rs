@@ -1,15 +1,17 @@
 //! `SmsConversationStore` — owns SMS conversation state, message caches,
-//! subscription orchestration, optimistic-send state, contacts, and SMS
+//! subscription orchestration, reply send state, contacts, and SMS
 //! notification dedup.
 
 use crate::app::{LoadingPhase, Message, SmsLoadingState};
 use crate::config::Config;
 use crate::constants::notifications::NORMAL_NOTIFICATION_TIMEOUT_MS;
-use crate::constants::sms::{MESSAGES_PER_PAGE, MMS_MAX_BYTES, NEW_MESSAGE_SYNC_INDICATOR_SECS};
+use crate::constants::sms::{
+    MESSAGES_PER_PAGE, MMS_MAX_BYTES, NEW_MESSAGE_SYNC_INDICATOR_SECS, SEND_ECHO_WINDOW_SECS,
+};
 use crate::fl;
 use crate::sms::logical::{merge_into_logical, split_candidate_thread_ids, LogicalConversation};
 use crate::sms::{
-    conversation_list_subscription, request_attachment_async, request_older_messages_async,
+    conversation_list_subscription, request_attachment_async, request_conversation_range_async,
     send_new_sms_async, send_sms_async, view_conversation_list, view_message_thread,
     view_new_message, ConversationListParams, MessageThreadParams, NewMessageParams,
 };
@@ -19,9 +21,7 @@ use cosmic::iced::{clipboard, Subscription};
 use cosmic::widget;
 use cosmic::Element;
 use kdeconnect_dbus::contacts::ContactLookup;
-use kdeconnect_dbus::plugins::{
-    is_address_valid, ConversationSummary, MessageType, SmsMessage, OPTIMISTIC_MESSAGE_UID,
-};
+use kdeconnect_dbus::plugins::{is_address_valid, ConversationSummary, MessageType, SmsMessage};
 use kdeconnect_dbus::{dedupe_addresses, normalize_phone_number, phone_suffix};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -62,8 +62,8 @@ pub enum SmsReply {
     /// Set or clear `status_message` directly without auto-clear.
     /// Used for sticky "Loading…" indicators that pair with explicit clear.
     SetStatus(Option<String>),
-    /// New-message send succeeded: set status_message + return to ConversationList.
-    NewMessageSent(String),
+    /// New-message send accepted by the daemon: return to ConversationList.
+    NewMessageSent,
     /// No app-level state change required.
     NoOp,
 }
@@ -119,6 +119,75 @@ fn page_settle(
     Some((served >= requested || grew, "conversation-loaded"))
 }
 
+/// One thread's first page since the open's request. The store feeds it every
+/// `conversationUpdated` and `conversationLoaded` for the thread and applies the step.
+#[derive(Debug, Default)]
+pub(crate) struct FirstPage {
+    /// Signals for the thread, duplicates included: whether the daemon has answered
+    served: u32,
+    /// Messages actually inserted: a full page of these settles
+    new: u32,
+    /// The one re-read has fired
+    reread: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum FirstPageEvent {
+    /// A `conversationUpdated`; `inserted` is false for a uid already shown
+    Served { inserted: bool },
+    /// A `conversationLoaded` with a non-zero count
+    Loaded(u64),
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum FirstPageStep {
+    Wait,
+    /// Fire `requestConversation(thread, 0, page)`
+    ReRead,
+    Settle {
+        has_more: bool,
+        detector: &'static str,
+    },
+}
+
+impl FirstPage {
+    /// Settles on a full page of new messages, or on a `conversationLoaded` once the
+    /// daemon has served something. On a fetch that signal precedes the page's
+    /// remaining messages, which land after the settle. A `conversationLoaded`
+    /// before anything was served means the request found an empty cache (23.08
+    /// fetches; 26.08+ serves nothing and the head arrives later via the list), so
+    /// it fires the one re-read. `has_more` never compares the count with what
+    /// loaded: the daemon keys its cache by date, so the count can include
+    /// messages it no longer holds.
+    fn step(&mut self, page: u32, event: FirstPageEvent) -> FirstPageStep {
+        match event {
+            FirstPageEvent::Served { inserted } => {
+                self.served += 1;
+                if inserted {
+                    self.new += 1;
+                }
+                if self.new >= page {
+                    FirstPageStep::Settle {
+                        has_more: true,
+                        detector: "full-page",
+                    }
+                } else {
+                    FirstPageStep::Wait
+                }
+            }
+            FirstPageEvent::Loaded(count) if self.served > 0 => FirstPageStep::Settle {
+                has_more: count > u64::from(page),
+                detector: "conversation-loaded",
+            },
+            FirstPageEvent::Loaded(_) if !self.reread => {
+                self.reread = true;
+                FirstPageStep::ReRead
+            }
+            FirstPageEvent::Loaded(_) => FirstPageStep::Wait,
+        }
+    }
+}
+
 /// The display floor of a merged set: the newest oldest-loaded date among
 /// threads that still have more (unknown counts as more). Messages older than
 /// it sit above history the daemon has not served yet, so the view hides them
@@ -142,6 +211,34 @@ fn display_floor(
         .max()
 }
 
+/// Status of the last reply sent from the open thread's composer.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum ReplySend {
+    #[default]
+    Idle,
+    /// `sendSms` in flight; Send disabled
+    Dispatching { body: String },
+    /// Daemon accepted; waiting for the phone's sent copy
+    AwaitingEcho { body: String, generation: u64 },
+    /// Window passed with no echo; a late echo still clears it
+    Unconfirmed { body: String },
+}
+
+impl ReplySend {
+    pub(crate) fn body(&self) -> Option<&str> {
+        match self {
+            ReplySend::Idle => None,
+            ReplySend::Dispatching { body }
+            | ReplySend::AwaitingEcho { body, .. }
+            | ReplySend::Unconfirmed { body } => Some(body),
+        }
+    }
+
+    pub(crate) fn is_dispatching(&self) -> bool {
+        matches!(self, ReplySend::Dispatching { .. })
+    }
+}
+
 pub struct SmsConversationStore {
     // Active SMS device
     pub(crate) sms_device_id: Option<String>,
@@ -153,7 +250,6 @@ pub struct SmsConversationStore {
     /// re-derivation works off this cache without re-fetching.
     pub(crate) raw_conversations: Vec<ConversationSummary>,
     pub(crate) conversations: Vec<LogicalConversation>,
-    pub(crate) sms_prefetch: Option<(String, Vec<ConversationSummary>)>,
     pub(crate) conversation_sync_active: bool,
     pub(crate) new_message_sync_active: bool,
     pub(crate) conversation_list_subscription_active: bool,
@@ -181,12 +277,16 @@ pub struct SmsConversationStore {
 
     // Reply compose / send
     pub(crate) sms_compose_text: widget::text_editor::Content,
-    pub(crate) sms_sending: bool,
-    pub(crate) sms_sending_body: Option<String>,
+    pub(crate) reply_send: ReplySend,
+    /// Bumped per accepted send; tags the echo-window timer so a stale one is ignored
+    pub(crate) reply_send_generation: u64,
 
     // Message pagination / scroll preservation
     pub(crate) messages_has_more: bool,
     pub(crate) older_page: Option<OlderPageLoad>,
+    /// Threads of the open set whose first page has not settled. Seeded by
+    /// `reset_thread_state`; an entry leaves when its page settles.
+    pub(crate) first_page: HashMap<i64, FirstPage>,
     pub(crate) thread_has_more: HashMap<i64, bool>,
     /// Last `conversationLoaded` count per thread of the open set. Only whether it
     /// grows is used: the count includes uids the daemon's cache overwrote.
@@ -218,7 +318,6 @@ impl SmsConversationStore {
             sms_device_name: None,
             raw_conversations: Vec::new(),
             conversations: Vec::new(),
-            sms_prefetch: None,
             conversation_sync_active: false,
             new_message_sync_active: false,
             conversation_list_subscription_active: false,
@@ -236,10 +335,11 @@ impl SmsConversationStore {
             contacts: ContactLookup::default(),
             pending_attachment: None,
             sms_compose_text: widget::text_editor::Content::new(),
-            sms_sending: false,
-            sms_sending_body: None,
+            reply_send: ReplySend::Idle,
+            reply_send_generation: 0,
             messages_has_more: true,
             older_page: None,
+            first_page: HashMap::new(),
             thread_has_more: HashMap::new(),
             last_count: HashMap::new(),
             new_message_recipients: Vec::new(),
@@ -261,8 +361,8 @@ impl SmsConversationStore {
     }
 
     /// Reset the open thread's load bookkeeping to what a fresh first page starts
-    /// from: no messages or uids, ever thread of the merged set with more, no page
-    /// in flight, initial load pending. Seeds `thread_has_more` from
+    /// from: no messages or uids, every thread of the merged set with more, no older
+    /// page in flight, every thread's first page pending. Seeds `thread_has_more` from
     /// `current_merged_thread_ids`, so set (or clear) those first. Called on open,
     /// on both closes, and on the reconnect regeneration; the view-lifecycle flags
     /// stay with each caller.
@@ -276,6 +376,11 @@ impl SmsConversationStore {
             .iter()
             .map(|&t| (t, true))
             .collect();
+        self.first_page = self
+            .current_merged_thread_ids
+            .iter()
+            .map(|&t| (t, FirstPage::default()))
+            .collect();
         self.last_count.clear();
         self.initial_load_complete = false;
     }
@@ -288,6 +393,10 @@ impl SmsConversationStore {
         let Some(path) = path else {
             return SmsReply::NoOp;
         };
+        // The daemon takes attachment paths as D-Bus strings, so they must be UTF-8.
+        if path.to_str().is_none() {
+            return SmsReply::Status(fl!("attachment-unreadable"));
+        }
         let Ok(meta) = std::fs::metadata(&path) else {
             return SmsReply::Status(fl!("attachment-unreadable"));
         };
@@ -370,6 +479,106 @@ impl SmsConversationStore {
             .then(|| self.finalize_older_page())
     }
 
+    /// Feed one signal to `thread_id`'s first page. `None` when it has none pending.
+    /// On `Settle` the entry leaves, so later signals for the thread are `None`.
+    fn first_page_step(&mut self, thread_id: i64, event: FirstPageEvent) -> Option<FirstPageStep> {
+        let step = self
+            .first_page
+            .get_mut(&thread_id)?
+            .step(MESSAGES_PER_PAGE, event);
+        if matches!(step, FirstPageStep::Settle { .. }) {
+            self.first_page.remove(&thread_id);
+        }
+        Some(step)
+    }
+
+    fn apply_first_page_step(
+        &mut self,
+        thread_id: i64,
+        step: FirstPageStep,
+        ctx: &SmsCtx,
+    ) -> cosmic::app::Task<Message> {
+        match step {
+            FirstPageStep::Wait => cosmic::app::Task::none(),
+            FirstPageStep::ReRead => self.request_first_page_reread(thread_id, ctx),
+            FirstPageStep::Settle { has_more, detector } => {
+                self.settle_first_page(thread_id, has_more, detector)
+            }
+        }
+    }
+
+    /// The first page's one re-read, offset pinned to 0 like every range request.
+    fn request_first_page_reread(
+        &mut self,
+        thread_id: i64,
+        ctx: &SmsCtx,
+    ) -> cosmic::app::Task<Message> {
+        let (Some(conn), Some(device_id)) = (ctx.conn, self.sms_device_id.as_ref()) else {
+            return self.settle_first_page(thread_id, true, "no-connection");
+        };
+        tracing::info!(
+            "First page of thread {}: conversationLoaded before any message, re-reading 0-{}",
+            thread_id,
+            MESSAGES_PER_PAGE
+        );
+        cosmic::app::Task::perform(
+            request_conversation_range_async(
+                conn.clone(),
+                device_id.clone(),
+                thread_id,
+                MESSAGES_PER_PAGE,
+            ),
+            cosmic::Action::App,
+        )
+    }
+
+    /// Record `thread_id`'s first page as settled. Once every thread of the open set
+    /// has settled, finish the initial load. Removes the thread's entry if still present.
+    fn settle_first_page(
+        &mut self,
+        thread_id: i64,
+        has_more: bool,
+        detector: &'static str,
+    ) -> cosmic::app::Task<Message> {
+        self.first_page.remove(&thread_id);
+        self.thread_has_more.insert(thread_id, has_more);
+        if let Some(newest) = self.messages.iter().map(|m| m.date).max() {
+            if let Some(device_id) = self.sms_device_id.clone() {
+                let key = (device_id, thread_id);
+                let current = self.last_seen_sms.get(&key).copied();
+                if current.is_none() || current < Some(newest) {
+                    self.last_seen_sms.insert(key, newest);
+                }
+            }
+        }
+        tracing::info!(
+            "First page of thread {} settled: detector={}, has_more={}, {} messages across the merged set",
+            thread_id,
+            detector,
+            has_more,
+            self.messages.len()
+        );
+        if !self.first_page.is_empty() {
+            return cosmic::app::Task::none();
+        }
+
+        self.messages.sort_by_key(|m| m.date);
+        self.messages_has_more = self
+            .current_merged_thread_ids
+            .iter()
+            .any(|t| *self.thread_has_more.get(t).unwrap_or(&false));
+        self.message_sync_active = false;
+        self.initial_load_complete = true;
+        self.sms_loading_state = SmsLoadingState::Idle;
+        if self.messages.is_empty() {
+            return cosmic::app::Task::none();
+        }
+        scrollable::snap_to(
+            widget::Id::new("message-thread"),
+            scrollable::RelativeOffset::START.into(),
+        )
+    }
+
     fn display_floor(&self) -> Option<i64> {
         display_floor(
             &self.messages,
@@ -440,12 +649,11 @@ impl SmsConversationStore {
             .iter()
             .map(|&(t, loaded_t)| {
                 cosmic::app::Task::perform(
-                    request_older_messages_async(
+                    request_conversation_range_async(
                         conn.clone(),
                         device_id.clone(),
                         t,
-                        loaded_t,
-                        MESSAGES_PER_PAGE,
+                        loaded_t + MESSAGES_PER_PAGE,
                     ),
                     cosmic::Action::App,
                 )
@@ -501,7 +709,6 @@ impl SmsConversationStore {
         let newest_addressed = self
             .messages
             .iter()
-            .filter(|m| m.uid != OPTIMISTIC_MESSAGE_UID)
             .filter_map(|m| {
                 let addrs = dedupe_addresses(&m.addresses);
                 (!addrs.is_empty()).then_some((m.date, addrs, m.sub_id))
@@ -611,13 +818,6 @@ impl SmsConversationStore {
 
     pub fn update(&mut self, msg: Message, ctx: &SmsCtx) -> (cosmic::app::Task<Message>, SmsReply) {
         match msg {
-            Message::SmsPrefetchReady(device_id, conversations) => {
-                if !conversations.is_empty() {
-                    self.sms_prefetch = Some((device_id, conversations));
-                }
-                (cosmic::app::Task::none(), SmsReply::NoOp)
-            }
-
             // Subscription-based conversation list loading handlers
             Message::ConversationReceived {
                 device_id,
@@ -816,15 +1016,25 @@ impl SmsConversationStore {
                 tracing::error!("SMS error: {}", err);
                 self.sms_loading_state = SmsLoadingState::Idle;
                 self.message_sync_active = false;
-                let status = format!("SMS error: {}", err);
+                let status = format!("{}: {}", fl!("sms-load-failed"), err);
                 (cosmic::app::Task::none(), SmsReply::Status(status))
             }
 
             // === Batch 2: Message thread / scroll / bubble ===
-            Message::OlderMessagesRequested { thread_id, ok } => {
+            Message::ConversationRangeRequested { thread_id, ok } => {
                 if !ok {
                     // Fire failed: abort the page so the spinner clears and the user can
-                    // retry by scrolling. has_more left as-is (still true), so retry works
+                    // retry with Load older. has_more left as-is (still true), so retry works
+                    if self.first_page.contains_key(&thread_id) {
+                        tracing::warn!(
+                            "First-page re-read failed for thread {}, settling",
+                            thread_id
+                        );
+                        return (
+                            self.settle_first_page(thread_id, true, "fire-failed"),
+                            SmsReply::NoOp,
+                        );
+                    }
                     tracing::warn!(
                         "Older-page request failed for thread {}, aborting page",
                         thread_id
@@ -836,15 +1046,7 @@ impl SmsConversationStore {
                         self.sms_loading_state = SmsLoadingState::Idle;
                     }
                 }
-                // ok == true; wait for streamed messages / ConversationStoreLoaded
-                (cosmic::app::Task::none(), SmsReply::NoOp)
-            }
-            Message::MessageThreadScrolled(viewport) => {
-                // Prefetch older messages when user scrolls near the top
-                const PREFETCH_THRESHOLD_PX: f32 = 100.0;
-                if viewport.absolute_offset_reversed().y < PREFETCH_THRESHOLD_PX {
-                    return (self.request_older_page(ctx), SmsReply::NoOp);
-                }
+                // ok == true; wait for the streamed signals
                 (cosmic::app::Task::none(), SmsReply::NoOp)
             }
 
@@ -942,40 +1144,6 @@ impl SmsConversationStore {
                     *load.served.entry(message.thread_id).or_insert(0) += 1;
                 }
 
-                // Reconcile optimistic message: if this incoming sent message
-                // matches our optimistic insert's body within a 5-minute window,
-                // upgrade the optimistic entry in-place instead of inserting a duplicate.
-                if message.uid != OPTIMISTIC_MESSAGE_UID
-                    && message.message_type == MessageType::Sent
-                {
-                    if let Some(pos) = self.messages.iter().position(|m| {
-                        m.uid == OPTIMISTIC_MESSAGE_UID
-                            && m.message_type == MessageType::Sent
-                            && m.body == message.body
-                            && (message.date - m.date).unsigned_abs() < 300_000
-                    }) {
-                        tracing::info!(
-                            "Reconciling optimistic message with real uid={}",
-                            message.uid
-                        );
-                        self.messages[pos].uid = message.uid;
-                        self.messages[pos].date = message.date;
-                        // The optimistic entry was inserted without attachments (we do not build a
-                        // local preview); the phone's echo is the authoritative copy, so adopt its
-                        // attachment list. Without this an attachment send reconciles cleanly and
-                        // then renders forever without its image.
-                        self.messages[pos].attachments = message.attachments.clone();
-                        self.known_message_ids.remove(&OPTIMISTIC_MESSAGE_UID);
-                        self.known_message_ids.insert(message.uid);
-                        self.sms_sending_body = None;
-                        return (
-                            self.try_settle(message_thread_id)
-                                .unwrap_or_else(cosmic::app::Task::none),
-                            SmsReply::NoOp,
-                        );
-                    }
-                }
-
                 // Deduplication: skip if already have this message
                 if self.known_message_ids.contains(&message.uid) {
                     tracing::debug!(
@@ -983,38 +1151,50 @@ impl SmsConversationStore {
                         message.uid,
                         thread_id
                     );
-                    return (
-                        self.try_settle(message_thread_id)
+                    let settle = match self.first_page_step(
+                        message_thread_id,
+                        FirstPageEvent::Served { inserted: false },
+                    ) {
+                        Some(step) => self.apply_first_page_step(message_thread_id, step, ctx),
+                        None => self
+                            .try_settle(message_thread_id)
                             .unwrap_or_else(cosmic::app::Task::none),
-                        SmsReply::NoOp,
-                    );
+                    };
+                    return (settle, SmsReply::NoOp);
                 }
                 self.known_message_ids.insert(message.uid);
 
-                // Check if this confirms our pending sent message
-                let confirmed_send = self.sms_sending_body.is_some()
-                    && message.message_type == MessageType::Sent
-                    && self.sms_sending_body.as_deref() == Some(message.body.as_str());
-                if confirmed_send {
-                    tracing::info!("Confirmed delivery of sent message uid={}", message.uid);
-                    self.sms_sending_body = None;
-                }
-
-                // Insert message in sorted order by date
+                // Insert position in date order; at the end means newest in the thread.
                 let insert_pos = self
                     .messages
                     .iter()
                     .position(|m| m.date > message.date)
                     .unwrap_or(self.messages.len());
+
+                // The phone's sent copy of the reply awaiting it. Newest-in-thread stops an older
+                // sent message with the same body (Load older, initial load) from matching.
+                let confirmed_send = message.message_type == MessageType::Sent
+                    && self.reply_send.body() == Some(message.body.as_str())
+                    && insert_pos == self.messages.len();
+                if confirmed_send {
+                    tracing::info!("Phone recorded the sent reply as uid={}", message.uid);
+                    self.reply_send = ReplySend::Idle;
+                }
+
                 self.messages.insert(insert_pos, message);
                 if let Some(load) = self.older_page.as_mut() {
                     *load.new.entry(message_thread_id).or_insert(0) += 1;
                 }
                 // Every exit below carries this, so an echo or a confirmed send landing as a
                 // page's last signal still settles it.
-                let settle = self
-                    .try_settle(message_thread_id)
-                    .unwrap_or_else(cosmic::app::Task::none);
+                let settle = match self
+                    .first_page_step(message_thread_id, FirstPageEvent::Served { inserted: true })
+                {
+                    Some(step) => self.apply_first_page_step(message_thread_id, step, ctx),
+                    None => self
+                        .try_settle(message_thread_id)
+                        .unwrap_or_else(cosmic::app::Task::none),
+                };
 
                 tracing::debug!(
                     "Added message to thread {}, now have {} messages",
@@ -1041,17 +1221,9 @@ impl SmsConversationStore {
                         SmsReply::NoOp,
                     );
                 }
-                // While the initial load is in flight, keep the newest message
-                // in view as messages stream in. Necessary because the daemon's
-                // worker emits `conversationLoaded` only when it actually
-                // fetched fresh phone data (see daemon's
-                // `addMessages()` → `conversationLoaded`); for cache-served
-                // hits the worker just emits per-message signals and finishes
-                // silently, so `ConversationStoreLoaded` and
-                // `ConversationLoadComplete` never fire and the scroll stays
-                // pinned at the top of an oldest-first list. Bounded by
-                // `initial_load_complete` so we don't yank a user reading
-                // older messages when a new SMS arrives later.
+                // While the first page is open, keep the newest message in view as the
+                // page streams in. Bounded by `initial_load_complete` so a new SMS arriving
+                // later doesn't yank a user reading older messages.
                 if !self.initial_load_complete {
                     return (
                         cosmic::app::Task::batch([
@@ -1066,25 +1238,33 @@ impl SmsConversationStore {
                 }
                 (settle, SmsReply::NoOp)
             }
-            Message::ConversationStoreLoaded {
-                thread_id,
-                total_count,
-            } => {
+            Message::ConversationLoaded { thread_id, count } => {
                 // `conversationLoaded` arrived - scroll to show messages while the page (on
                 // a fetch) and any later phone data stream in. Each fanned-out subscription
-                // emits its own ConversationStoreLoaded; accept any signal whose thread is
+                // emits its own ConversationLoaded; accept any signal whose thread is
                 // in the open merged set.
                 if !self.current_merged_thread_ids.contains(&thread_id) {
                     return (cosmic::app::Task::none(), SmsReply::NoOp);
                 }
 
-                let grew = total_count > 0
+                let grew = count > 0
                     && self
                         .last_count
                         .get(&thread_id)
-                        .is_none_or(|&prev| total_count > prev);
-                if total_count > 0 {
-                    self.last_count.insert(thread_id, total_count);
+                        .is_none_or(|&prev| count > prev);
+                if count > 0 {
+                    self.last_count.insert(thread_id, count);
+                }
+
+                if count > 0 {
+                    if let Some(step) =
+                        self.first_page_step(thread_id, FirstPageEvent::Loaded(count))
+                    {
+                        return (
+                            self.apply_first_page_step(thread_id, step, ctx),
+                            SmsReply::NoOp,
+                        );
+                    }
                 }
 
                 // During an older page this records whether the count grew; the thread
@@ -1096,7 +1276,7 @@ impl SmsConversationStore {
                     .filter(|l| l.pending.contains(&thread_id))
                 {
                     // Before the cache burst (`served == 0`) this is another request's signal
-                    if total_count > 0 && load.served.get(&thread_id).is_some_and(|&s| s > 0) {
+                    if count > 0 && load.served.get(&thread_id).is_some_and(|&s| s > 0) {
                         *load.grew.entry(thread_id).or_insert(false) |= grew;
                     }
                     return (
@@ -1109,7 +1289,7 @@ impl SmsConversationStore {
                     "conversationLoaded for thread {}: {} messages displayed across the merged set, daemon holds {} for this thread",
                     thread_id,
                     self.messages.len(),
-                    total_count
+                    count
                 );
 
                 // Update pagination state via helper (handles merged-set math).
@@ -1122,8 +1302,8 @@ impl SmsConversationStore {
                 // not "empty" (daemon quirk) — fall back to the per-thread page
                 // heuristic so a late-arriving 0 can't latch has_more false and
                 // kill the first scroll's prefetch.
-                let has_more_t = if total_count > 0 {
-                    loaded_t < total_count
+                let has_more_t = if count > 0 {
+                    loaded_t < count
                 } else {
                     loaded_t >= MESSAGES_PER_PAGE as u64
                 };
@@ -1139,92 +1319,6 @@ impl SmsConversationStore {
 
                 // Scroll to bottom to show latest messages
                 if !self.initial_load_complete && !self.messages.is_empty() {
-                    return (
-                        scrollable::snap_to(
-                            widget::Id::new("message-thread"),
-                            scrollable::RelativeOffset::START.into(),
-                        ),
-                        SmsReply::NoOp,
-                    );
-                }
-                (cosmic::app::Task::none(), SmsReply::NoOp)
-            }
-            Message::ConversationLoadComplete {
-                thread_id,
-                total_count,
-            } => {
-                // Guard: accept completion signal from any thread in the open
-                // merged set. Each fanned-out subscription emits its own
-                // ConversationLoadComplete
-                if !self.current_merged_thread_ids.contains(&thread_id) {
-                    tracing::debug!(
-                        "Ignoring load complete for thread {} (open merged set: {:?})",
-                        thread_id,
-                        self.current_merged_thread_ids
-                    );
-                    return (cosmic::app::Task::none(), SmsReply::NoOp);
-                }
-
-                let was_already_complete = self.initial_load_complete;
-
-                tracing::info!(
-                    "Conversation {} loading complete: {} messages loaded, {} total in conversation \
-                     (already_complete={})",
-                    thread_id,
-                    self.messages.len(),
-                    total_count,
-                    was_already_complete
-                );
-
-                // Idempotent state refresh — safe to redo on each completion in
-                // a merged set (one ConversationLoadComplete per fanned-out
-                // subscription). Sort + pagination math + last_seen_sms all
-                // converge on the same final values regardless of arrival order.
-                self.messages.sort_by_key(|m| m.date);
-                let loaded_t = self
-                    .messages
-                    .iter()
-                    .filter(|m| m.thread_id == thread_id)
-                    .count() as u64;
-                // `total_count == 0` on the collected-reply path means "unknown",
-                // not "empty" (daemon quirk) — fall back to the per-thread page
-                // heuristic so a late-arriving 0 can't latch has_more false and
-                // kill the first scroll's prefetch.
-                let has_more_t = if total_count > 0 {
-                    loaded_t < total_count
-                } else {
-                    loaded_t >= MESSAGES_PER_PAGE as u64
-                };
-                self.thread_has_more.insert(thread_id, has_more_t);
-                self.messages_has_more = self
-                    .current_merged_thread_ids
-                    .iter()
-                    .any(|t| *self.thread_has_more.get(t).unwrap_or(&false));
-                if let Some(newest) = self.messages.iter().map(|m| m.date).max() {
-                    if let Some(device_id) = self.sms_device_id.clone() {
-                        let key = (device_id, thread_id);
-                        let current = self.last_seen_sms.get(&key).copied();
-                        if current.is_none() || current < Some(newest) {
-                            self.last_seen_sms.insert(key, newest);
-                        }
-                    }
-                }
-
-                // First-completion-only effects: clear loading indicators and
-                // snap to the latest message. Skipping these on repeat
-                // arrivals avoids yanking the user back to the bottom if a
-                // late-completing subscription fires after they've started
-                // scrolling. Note: subscriptions keep running to catch new
-                // messages (including sent-message echoes).
-                if was_already_complete {
-                    return (cosmic::app::Task::none(), SmsReply::NoOp);
-                }
-
-                self.message_sync_active = false;
-                self.initial_load_complete = true;
-                self.sms_loading_state = SmsLoadingState::Idle;
-
-                if !self.messages.is_empty() {
                     return (
                         scrollable::snap_to(
                             widget::Id::new("message-thread"),
@@ -1273,7 +1367,7 @@ impl SmsConversationStore {
                     self.sms_device_id,
                     self.current_thread_id,
                     self.sms_compose_text.text().trim().is_empty(),
-                    self.sms_sending
+                    self.reply_send.is_dispatching(),
                 );
                 if let (Some(conn), Some(device_id), Some(thread_id)) = (
                     ctx.conn,
@@ -1287,7 +1381,7 @@ impl SmsConversationStore {
                         .pending_attachment
                         .as_ref()
                         .is_some_and(|a| a.too_large(&message_text));
-                    if has_content && !too_large && !self.sms_sending {
+                    if has_content && !too_large && !self.reply_send.is_dispatching() {
                         let Some((addresses, sub_id)) = self.reply_recipients(thread_id) else {
                             tracing::warn!("No recipient for thread {}; nothing sent", thread_id);
                             return (
@@ -1295,8 +1389,9 @@ impl SmsConversationStore {
                                 SmsReply::Status(fl!("reply-no-recipient")),
                             );
                         };
-                        self.sms_sending = true;
-                        self.sms_sending_body = Some(message_text.clone());
+                        self.reply_send = ReplySend::Dispatching {
+                            body: message_text.clone(),
+                        };
                         tracing::info!(
                             "Dispatching sendSms for thread {} to {} recipient(s), sub_id {}",
                             thread_id,
@@ -1308,6 +1403,7 @@ impl SmsConversationStore {
                                 send_sms_async(
                                     conn.clone(),
                                     device_id.clone(),
+                                    thread_id,
                                     addresses,
                                     sub_id,
                                     message_text,
@@ -1322,7 +1418,7 @@ impl SmsConversationStore {
                             "SendSms conditions not met: text_empty={}, has_attachment={}, sending={}, too_large={}",
                             message_text.trim().is_empty(),
                             self.pending_attachment.is_some(),
-                            self.sms_sending,
+                            self.reply_send.is_dispatching(),
                             too_large
                         );
                     }
@@ -1331,74 +1427,81 @@ impl SmsConversationStore {
                 }
                 (cosmic::app::Task::none(), SmsReply::NoOp)
             }
-            Message::SmsSendResult(result) => {
-                self.sms_sending = false;
+            Message::SmsSendResult((device_id, thread_id), result) => {
+                // A result for a thread the composer has left (Back, another thread,
+                // device closed) must not touch the state that now belongs to the open one.
+                let for_open_thread = self.sms_device_id.as_deref() == Some(device_id.as_str())
+                    && self.current_thread_id == Some(thread_id);
+                if !for_open_thread {
+                    return match result {
+                        Ok(()) => {
+                            tracing::debug!(
+                                "Send result for thread {} after it closed; ignored",
+                                thread_id
+                            );
+                            (cosmic::app::Task::none(), SmsReply::NoOp)
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                "SMS send error for closed thread {}: {}",
+                                thread_id,
+                                err
+                            );
+                            let status = format!("{}: {}", fl!("sms-failed"), err);
+                            (cosmic::app::Task::none(), SmsReply::Status(status))
+                        }
+                    };
+                }
+
                 match result {
-                    Ok(sent_body) => {
-                        tracing::debug!("SMS sent successfully");
+                    Ok(()) => {
                         self.sms_compose_text = widget::text_editor::Content::new();
                         self.pending_attachment = None;
-                        if let Some(thread_id) = self.current_thread_id {
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as i64)
-                                .unwrap_or(0);
-
-                            // Insert optimistic message if echo hasn't already arrived.
-                            // sms_sending_body is cleared by confirmed_send in
-                            // ConversationMessageReceived if the echo arrived before
-                            // SmsSendResult — skip to avoid duplicate.
-                            if self.sms_sending_body.is_some() {
-                                // Source sub_id from the LogicalConversation
-                                // populated at fetch time. The value is the
-                                // same SIM property; sourcing it here closes
-                                // the pre-first-message window where the
-                                // optimistic stamp would have fallen back to -1.
-                                let sub_id = self
-                                    .logical_for(thread_id)
-                                    .map(|lc| lc.subscription_id)
-                                    .unwrap_or(-1);
-                                let optimistic = SmsMessage {
-                                    body: sent_body,
-                                    addresses: self
-                                        .current_thread_addresses
-                                        .clone()
-                                        .unwrap_or_default(),
-                                    date: now_ms,
-                                    message_type: MessageType::Sent,
-                                    read: true,
-                                    thread_id,
-                                    uid: OPTIMISTIC_MESSAGE_UID,
-                                    sub_id,
-                                    attachments: vec![],
-                                };
-                                self.messages.push(optimistic);
-                                self.known_message_ids.insert(OPTIMISTIC_MESSAGE_UID);
-                                self.sms_sending_body = None;
-
-                                // No subscription restart needed — the message subscription
-                                // runs as long as the thread is open and will catch the
-                                // phone's echo naturally for optimistic reconciliation.
-
+                        match std::mem::take(&mut self.reply_send) {
+                            ReplySend::Dispatching { body } => {
+                                self.reply_send_generation += 1;
+                                let generation = self.reply_send_generation;
+                                self.reply_send = ReplySend::AwaitingEcho { body, generation };
                                 return (
-                                    scrollable::snap_to(
-                                        widget::Id::new("message-thread"),
-                                        scrollable::RelativeOffset::START.into(),
+                                    cosmic::app::Task::perform(
+                                        async move {
+                                            tokio::time::sleep(std::time::Duration::from_secs(
+                                                SEND_ECHO_WINDOW_SECS,
+                                            ))
+                                            .await;
+                                            Message::SendEchoWindowElapsed(generation)
+                                        },
+                                        cosmic::Action::App,
                                     ),
                                     SmsReply::NoOp,
                                 );
                             }
+                            // Idle: the echo arrived before this result and already cleared it
+                            other => self.reply_send = other,
                         }
-
-                        (cosmic::app::Task::none(), SmsReply::Status(fl!("sms-sent")))
+                        (cosmic::app::Task::none(), SmsReply::NoOp)
                     }
                     Err(err) => {
                         tracing::error!("SMS send error: {}", err);
-                        self.sms_sending_body = None;
+                        self.reply_send = ReplySend::Idle;
                         let status = format!("{}: {}", fl!("sms-failed"), err);
                         (cosmic::app::Task::none(), SmsReply::Status(status))
                     }
                 }
+            }
+
+            Message::SendEchoWindowElapsed(fired) => {
+                match std::mem::take(&mut self.reply_send) {
+                    ReplySend::AwaitingEcho { body, generation } if generation == fired => {
+                        tracing::info!(
+                            "No sent copy from the phone within {} s; reply marked unconfirmed",
+                            SEND_ECHO_WINDOW_SECS
+                        );
+                        self.reply_send = ReplySend::Unconfirmed { body };
+                    }
+                    other => self.reply_send = other,
+                }
+                (cosmic::app::Task::none(), SmsReply::NoOp)
             }
 
             // Attachment messages
@@ -1466,6 +1569,9 @@ impl SmsConversationStore {
             }
 
             Message::SmsNotificationReceived(device_id, message) => {
+                if !ctx.config.sms_notifications {
+                    return (cosmic::app::Task::none(), SmsReply::NoOp);
+                }
                 // Freshness check: only notify for messages received within the last 30 seconds.
                 // This prevents false notifications when fetching historical messages and handles
                 // cross-process deduplication (COSMIC spawns multiple applet instances).
@@ -1512,48 +1618,49 @@ impl SmsConversationStore {
 
                 // Show notification asynchronously
                 (
-                    cosmic::app::Task::perform(
-                        async move {
-                            // Build summary: resolve sender name if needed and not already cached
-                            let summary = if show_sender {
-                                let sender_name = match cached_sender_name {
-                                    Some(name) => name,
-                                    None => {
-                                        let contacts =
-                                            ContactLookup::load_for_device(&device_id).await;
-                                        contacts.get_group_display_name(&addresses, 3)
-                                    }
-                                };
-                                fl!("sms-notification-title-from", sender = sender_name)
-                            } else {
-                                fl!("sms-notification-title")
-                            };
-
-                            let body = if show_content {
-                                message_body
-                            } else {
-                                fl!("sms-notification-body-hidden")
-                            };
-
-                            let mut notification = notify_rust::Notification::new();
-                            notification
-                                .summary(&summary)
-                                .body(&body)
-                                .icon("phone-symbolic")
-                                .appname("Connected")
-                                .timeout(notify_rust::Timeout::Milliseconds(
-                                    NORMAL_NOTIFICATION_TIMEOUT_MS,
-                                ));
-                            match tokio::task::spawn_blocking(move || notification.show()).await {
-                                Ok(Ok(_handle)) => tracing::debug!("SMS notification shown"),
-                                Ok(Err(e)) => {
-                                    tracing::warn!("Failed to show SMS notification: {}", e)
+                    cosmic::Task::future(async move {
+                        // Build summary: resolve sender name if needed and not already cached
+                        let summary = if show_sender {
+                            let sender_name = match cached_sender_name {
+                                Some(name) => name,
+                                None => {
+                                    let contacts = ContactLookup::load_for_device(&device_id).await;
+                                    contacts.get_group_display_name(&addresses, 3)
                                 }
-                                Err(e) => tracing::warn!("SMS notification task panicked: {}", e),
+                            };
+                            if sender_name.is_empty() {
+                                fl!("sms-notification-title")
+                            } else {
+                                fl!("sms-notification-title-from", sender = sender_name)
                             }
-                        },
-                        |_| cosmic::Action::App(Message::RefreshDevices),
-                    ),
+                        } else {
+                            fl!("sms-notification-title")
+                        };
+
+                        let body = if show_content {
+                            message_body
+                        } else {
+                            fl!("sms-notification-body-hidden")
+                        };
+
+                        let mut notification = notify_rust::Notification::new();
+                        notification
+                            .summary(&summary)
+                            .body(&body)
+                            .icon("phone-symbolic")
+                            .appname("Connected")
+                            .timeout(notify_rust::Timeout::Milliseconds(
+                                NORMAL_NOTIFICATION_TIMEOUT_MS,
+                            ));
+                        match tokio::task::spawn_blocking(move || notification.show()).await {
+                            Ok(Ok(_handle)) => tracing::debug!("SMS notification shown"),
+                            Ok(Err(e)) => {
+                                tracing::warn!("Failed to show SMS notification: {}", e)
+                            }
+                            Err(e) => tracing::warn!("SMS notification task panicked: {}", e),
+                        }
+                    })
+                    .discard(),
                     SmsReply::NoOp,
                 )
             }
@@ -1690,10 +1797,9 @@ impl SmsConversationStore {
             Message::NewMessageSendResult(result) => {
                 self.new_message_sending = false;
                 match &result {
-                    Ok(msg) => {
-                        tracing::info!("New message send result: {}", msg);
+                    Ok(()) => {
+                        tracing::info!("New message accepted by the daemon");
                         // Clear fields and return to conversation list
-                        let success_msg = msg.clone();
                         self.new_message_recipients.clear();
                         self.new_message_recipient_input.clear();
                         self.new_message_pending_attachment = None;
@@ -1717,14 +1823,11 @@ impl SmsConversationStore {
                                 cosmic::Action::App,
                             );
                         }
-                        (settle_task, SmsReply::NewMessageSent(success_msg))
+                        (settle_task, SmsReply::NewMessageSent)
                     }
                     Err(err) => {
                         tracing::error!("New message send error: {}", err);
-                        (
-                            cosmic::app::Task::none(),
-                            SmsReply::Status(format!("Send failed: {}", err)),
-                        )
+                        (cosmic::app::Task::none(), SmsReply::NoOp)
                     }
                 }
             }
@@ -1769,7 +1872,7 @@ impl SmsConversationStore {
                     loading_state: &self.sms_loading_state,
                     sms_compose_text: &self.sms_compose_text,
                     pending_attachment: self.pending_attachment.as_ref(),
-                    sms_sending: self.sms_sending,
+                    reply_send: &self.reply_send,
                     sync_active: self.message_sync_active,
                     pressed_bubble_uid: self.pressed_bubble_uid,
                     show_copy_hint: self.show_copy_hint,
@@ -1986,19 +2089,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reply_recipients_skips_optimistic() {
-        let mut store = SmsConversationStore::new();
-        store.messages = vec![
-            msg(1, 100, &["+15551234567"], 2),
-            msg(OPTIMISTIC_MESSAGE_UID, 200, &["+15559876543"], 3),
-        ];
-        assert_eq!(
-            store.reply_recipients(1),
-            Some((addrs(&["+15551234567"]), 2))
-        );
-    }
-
-    #[test]
     fn stage_attachment_refuses_unreadable_file() {
         use std::os::unix::fs::PermissionsExt;
         let path =
@@ -2010,5 +2100,114 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(matches!(reply, SmsReply::Status(_)));
         assert!(slot.is_none());
+    }
+
+    /// A store with `threads` open and their first pages pending, as `OpenConversation` leaves it
+    fn opened(threads: &[i64]) -> SmsConversationStore {
+        let mut store = SmsConversationStore::new();
+        store.current_merged_thread_ids = threads.to_vec();
+        store.reset_thread_state();
+        store
+    }
+
+    const NEW: FirstPageEvent = FirstPageEvent::Served { inserted: true };
+    const DUP: FirstPageEvent = FirstPageEvent::Served { inserted: false };
+    const WAIT: Option<FirstPageStep> = Some(FirstPageStep::Wait);
+    const REREAD: Option<FirstPageStep> = Some(FirstPageStep::ReRead);
+
+    fn settle(has_more: bool, detector: &'static str) -> Option<FirstPageStep> {
+        Some(FirstPageStep::Settle { has_more, detector })
+    }
+
+    #[test]
+    fn first_page_cached_head_then_fetch() {
+        // Capture run 1: the cached head, the fetch's conversationLoaded(14), then the page
+        let mut s = opened(&[1315]);
+        assert_eq!(s.first_page_step(1315, NEW), WAIT);
+        assert_eq!(
+            s.first_page_step(1315, FirstPageEvent::Loaded(14)),
+            settle(true, "conversation-loaded")
+        );
+        assert_eq!(s.first_page_step(1315, NEW), None);
+    }
+
+    #[test]
+    fn first_page_empty_cache_rereads_once_and_ignores_the_late_count() {
+        // Capture run 2: conversationLoaded(14, 25) before any message, the ten-message
+        // page, then the list bootstrap's second conversationLoaded(14, 25)
+        let mut s = opened(&[14]);
+        assert_eq!(s.first_page_step(14, FirstPageEvent::Loaded(25)), REREAD);
+        for _ in 0..9 {
+            assert_eq!(s.first_page_step(14, NEW), WAIT);
+        }
+        assert_eq!(s.first_page_step(14, NEW), settle(true, "full-page"));
+        assert_eq!(s.first_page_step(14, FirstPageEvent::Loaded(25)), None);
+    }
+
+    #[test]
+    fn first_page_head_not_yet_cached() {
+        // 26.08+: the open gets nothing; the head's arrival emits conversationLoaded(t, 1);
+        // the re-read serves the head, fetches, and the fetch's count settles
+        for (count, has_more) in [(30, true), (4, false)] {
+            let mut s = opened(&[7]);
+            assert_eq!(s.first_page_step(7, FirstPageEvent::Loaded(1)), REREAD);
+            assert_eq!(s.first_page_step(7, NEW), WAIT);
+            assert_eq!(
+                s.first_page_step(7, FirstPageEvent::Loaded(count)),
+                settle(has_more, "conversation-loaded")
+            );
+        }
+    }
+
+    #[test]
+    fn first_page_overstated_count_settles_on_the_reread() {
+        // Pre-26.12 daemon: nine known uids, eight in the cache. The re-read fetches
+        // again and its conversationLoaded arrives after its duplicates.
+        let mut s = opened(&[1291]);
+        assert_eq!(s.first_page_step(1291, FirstPageEvent::Loaded(9)), REREAD);
+        for _ in 0..8 {
+            assert_eq!(s.first_page_step(1291, NEW), WAIT);
+        }
+        for _ in 0..8 {
+            assert_eq!(s.first_page_step(1291, DUP), WAIT);
+        }
+        assert_eq!(
+            s.first_page_step(1291, FirstPageEvent::Loaded(9)),
+            settle(false, "conversation-loaded")
+        );
+    }
+
+    #[test]
+    fn first_page_rereads_at_most_once() {
+        let mut s = opened(&[7]);
+        assert_eq!(s.first_page_step(7, FirstPageEvent::Loaded(1)), REREAD);
+        assert_eq!(s.first_page_step(7, FirstPageEvent::Loaded(1)), WAIT);
+    }
+
+    #[test]
+    fn first_page_cache_served_full_page() {
+        let mut s = opened(&[3]);
+        for _ in 0..9 {
+            assert_eq!(s.first_page_step(3, NEW), WAIT);
+        }
+        assert_eq!(s.first_page_step(3, NEW), settle(true, "full-page"));
+    }
+
+    #[test]
+    fn first_page_duplicates_do_not_fill_it() {
+        let mut s = opened(&[3]);
+        for _ in 0..10 {
+            assert_eq!(s.first_page_step(3, DUP), WAIT);
+        }
+    }
+
+    #[test]
+    fn initial_load_completes_when_every_thread_has_settled() {
+        let mut s = opened(&[1, 2]);
+        let _ = s.settle_first_page(1, false, "test");
+        assert!(!s.initial_load_complete);
+        let _ = s.settle_first_page(2, true, "test");
+        assert!(s.initial_load_complete);
+        assert!(s.messages_has_more);
     }
 }

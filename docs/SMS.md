@@ -15,8 +15,7 @@ therefore operates on a *set* of threadIds rather than one, which is the assumpt
 checking before changing anything here.
 
 The daemon offers no reliable "done" event, so both subscriptions derive settlement locally: the
-list on a quiet window with one cold-start retry, threads on a full page received. Selecting a
-device prefetches conversation heads with `activeConversations()` so the SMS view can open warm.
+list on a quiet window with one cold-start retry, threads on a full page received.
 
 ## Architecture Overview
 
@@ -46,12 +45,6 @@ Three consequences the rest of this document depends on:
   after its warning, so only a non-empty cache that cannot fill the request triggers a phone
   fetch. On `23.08.5` an empty cache fetches the newest 25.
 
-The applet's `ConversationStoreLoaded` message and the "store" wording in
-`MESSAGE_SUBSCRIPTION_TIMEOUT_SECS`'s comment predate this being understood. They refer to the
-daemon's in-memory cache, not to any persistent storage. Renaming them is cosmetic and has not
-been done; do not read the names as evidence of a store that exists.
-
-
 ### Conversation List Loading
 
 Conversation-list loading is cache-first and long-lived:
@@ -72,23 +65,29 @@ Important details:
 
 ### Message Thread Loading
 
-Thread loading uses a long-lived subscription:
+Thread loading uses one long-lived subscription per thread of the open conversation, as a signal pump:
 
-1. Opening a thread starts `conversation_message_subscription`.
-2. Match rules are installed before requests are fired.
-3. One `requestConversation()` call is made, on the Conversations interface, for per-message UI signals.
-4. If the daemon's cache holds a full page, the per-message signals arrive at once and the load completes on the tenth. If it has to fetch from the phone, `conversationLoaded` arrives first with the daemon's count and the page follows it within a millisecond; the load completes when `received >= min(page, count)`.
-5. `PHONE_RESPONSE_TIMEOUT_MS` is a net for a page that never fills, not the normal completion.
-6. The subscription then continues listening for new incoming messages and sent-message echoes until the thread closes.
+1. Opening a thread starts `conversation_message_subscription` for each thread in `current_merged_thread_ids`.
+2. It installs match rules, then fires one `requestConversation(thread, 0, page)` on the Conversations interface.
+3. It forwards every `conversationUpdated` and `conversationLoaded` for its thread until the thread closes. It decides nothing.
 
-Important details:
+The store settles each thread's first page (`FirstPage` in `store.rs`) on the same shape as an older page: a full page of new messages, or a `conversationLoaded` once the thread has served at least one signal. If the daemon's cache holds
+a full page, the page arrives at once and settles on the tenth. If it has to fetch, `conversationLoaded` arrives first and the rest of the page follows within a millisecond, landing after the settle. The count is never compared with what
+loaded: the daemon keys its cache by date, so before 26.12 it can include messages the cache overwrote, and a thread shorter than a page would never reach it.
 
-- The list is rendered oldest-first, so an unscrolled scrollable lands on the oldest message. Auto-scroll-to-bottom is dispatched on `ConversationStoreLoaded`, on `ConversationLoadComplete`, on each `ConversationMessageReceived` while `!initial_load_complete`, and on confirmed sent-message echoes. The per-message dispatch covers cached-store hits where the daemon's worker satisfies the request entirely from `m_conversations` and never emits `conversationLoaded` (see `requestconversationworker.cpp`'s `numHandled >= howMany` branch), which would otherwise leave the user pinned at the top of a long thread.
-- `initial_load_complete` gates scroll-based loading of older messages, and bounds the per-message auto-scroll so a new incoming SMS arriving while the user is reading older content doesn't yank them down.
-- The daemon inserts a phone batch into `m_conversations` before it emits `conversationLoaded` and before it releases the worker (see "Where the daemon's data actually lives"), so a first-open page is never short because of write ordering. A page can still come up short when the thread is opened before the conversation-list bootstrap has delivered its head: the worker then has nothing to page from, and on a `26.08.0` or newer daemon it does not fetch either. The thread subscription does not match `conversationCreated`, so the head arriving later is invisible to it; the storm's `conversationLoaded(id, 1)` is what it sees. The daemon's `addMessages()` only emits `conversationUpdated` for the latest message in a thread, so historical backfill from the phone arrives silently, observable only through `conversationLoaded(count)`. Recovery is bounded to one re-issued `requestConversation` per thread open, with two triggers:
-  - **Primary**: a second `conversationLoaded` arrives with `count > received_message_count` while the page is still under-filled (`received < messages_per_page`). The retry fires immediately. On the measured daemon the only producer of such a signal inside the load window is a list-bootstrap duplicate landing in the millisecond between the fetch's `conversationLoaded` and its page; the trigger is kept because it is harmless (pinned offset) and bounded.
-  - **Fallback**: `phone_deadline` expires with `received <= 1`. This is the live case: the head-not-yet-cached open above. Since `480e69e` a one-message thread no longer reaches it, because its load completes on `conversationLoaded` itself.
-- The retry re-reads the Conversations interface as `requestConversation(threadId, 0, received + page)`. **The offset is deliberately pinned to 0 and only the range end moves.** The daemon serves newest-first, so widening the range returns the same messages, and `crbegin() + 0` can never index past the end of its cache. A non-zero `start` against a cache holding fewer messages **segfaults kdeconnectd 23.08.5** (no bounds check between the D-Bus wire and the iterator in `requestconversationworker.cpp`) and silently returns nothing on newer daemons - so an out-of-range offset is an applet-side correctness bug against every daemon version, and the daemon does not restart itself. Clamping `start` against the last known store count is **not** an alternative: every count the applet holds is stale in exactly the crash scenario (a restarted daemon with a cold cache) and it cannot detect that, so the clamp is circular. The resulting per-message signals merge via `known_message_ids` dedup.
+A `conversationLoaded` that arrives before the thread has served anything means the request found an empty cache. On 23.08.5 the daemon fetched and the page follows; on 26.08.0+ (`0dc666ad9`) it served nothing, and the signal is the list
+bootstrap delivering the thread's head. Either way the store re-reads once, `requestConversation(thread, 0, page)`. On a long thread the re-read is served from cache as duplicates. On a short thread it is a second phone fetch, and its
+`conversationLoaded`, arriving after its duplicates, settles the page. `addMessages()` announces only a thread's latest message, so a backfill is visible only as a count; the re-read is how its messages arrive.
+
+There is no clock. A thread whose phone never answers shows the loading text until Back or the reconnect regeneration.
+
+- `has_more` for a thread settled on `conversationLoaded` is `count > page`; a full page is `true`. An overstated count can show Load older on a thread just over a page; one press settles it false.
+- The initial load completes when every thread of the merged set has settled: `initial_load_complete` is set, the sync indicator clears and the view snaps to the newest message. Until then each arriving message also snaps, so the newest
+stays in view.
+- The re-read's offset is pinned to 0 and only the range end moves. The daemon serves newest-first, so widening the range returns the same messages, and `crbegin() + 0` can never index past the end of its cache. A non-zero `start` against
+a cache holding fewer messages **segfaults kdeconnectd 23.08.5** (no bounds check between the D-Bus wire and the iterator in `requestconversationworker.cpp`) and silently returns nothing on newer daemons - so an out-of-range offset is an
+applet-side correctness bug against every daemon version, and the daemon does not restart itself. Clamping `start` against the last known store count is **not** an alternative: every count the applet holds is stale in exactly the crash
+scenario (a restarted daemon with a cold cache) and it cannot detect that, so the clamp is circular. The resulting per-message signals merge via `known_message_ids` dedup.
 
 ### Reaction-Thread Merging
 
@@ -108,8 +107,7 @@ Opening a merged conversation fans out the message subscription: one `conversati
 
 Multi-subscription completion semantics:
 
-- `ConversationLoadComplete` is idempotent. Math (sort, `messages_has_more`, `last_seen_sms`) always runs; loading-state clear and scroll-to-bottom snap fire only on the first arrival. Late completions silently refresh stats so a slow-completing subscription can't yank the user back to bottom.
-- `thread_has_more: HashMap<i64, bool>` tracks exhaustion per thread as `loaded_t < total_count`, counting only messages carrying that `thread_id` — so per-thread counts are directly comparable and merged-set size no longer forces a heuristic. That rule applies on a thread open; an older page sets it by the settle rule under "Older Message Loading", and a later `conversationLoaded` never raises it. The heuristic survives only for `total_count == 0`, which the daemon uses to mean *unknown*, not *empty*; there it falls back to `loaded_t >= MESSAGES_PER_PAGE`. `messages_has_more` is the OR across `thread_has_more` over `current_merged_thread_ids`.
+- Each thread's first page settles on its own signals; the initial load completes when the last one does. `thread_has_more` is recorded per thread as it settles, by the rule above; an older page sets it by the settle rule under Older Message Loading, and a later `conversationLoaded` never raises it. `messages_has_more` is the OR across `thread_has_more` over `current_merged_thread_ids`.
 
 ### Recipient rule
 
@@ -136,7 +134,7 @@ The merge-off path uses the same grouping key as the merge-on path, so any pair 
 
 ### Older Message Loading
 
-Older messages are loaded when the user scrolls near the top of the thread, or presses Load older at the top of the thread, and are prepended as they arrive. The row exists because a first page that fits the popup has nothing to scroll, so no scroll event ever fires. It shows only once the initial load has completed and more history exists, the same condition the fire path checks. The thread is anchored to the bottom, so a prepend does not move the view.
+Older messages are loaded when the user presses Load older at the top of the thread, and are prepended as they arrive. The row shows only once the initial load has completed and more history exists, the same condition `request_older_page` checks. The thread is anchored to the bottom, so a prepend does not move the view. There is no scroll-to-top prefetch: an `on_scroll` handler publishes a message on every redraw whose bounds change, and that panics tiny_skia when a newly created popup is redrawn before its first configure ([pop-os/libcosmic#1491](https://github.com/pop-os/libcosmic/issues/1491)). Restore it once the upstream fix reaches the lock rev.
 
 A thread's page settles on a full page of new messages, or on the first `conversationLoaded` for the thread after its cache burst. That signal is the last the daemon sends for the page: either its cache filled the request, or it fetched from the phone and emitted what arrived. More history exists if the cache filled the request (`served >= requested`) or the count grew past the last one seen (`last_count`). The count itself is never compared with the loaded count: the daemon keys its cache by date, so messages sent in the same second overwrite each other, and the count includes messages it can no longer serve. A `conversationLoaded` that arrives before the burst belongs to another request and is ignored. Because the range starts at 0, the daemon re-serves the messages already shown before the older ones; those duplicates count toward position in the range (`served`), not toward progress (`new`), so a page cannot settle full-page on them.
 
@@ -146,7 +144,7 @@ For merged conversations, the fetch fans out: one request per threadId in `curre
 
 In a merged conversation one thread's page can cover hours while another's covers months, which would put the quiet threads' old messages directly above the busy thread's oldest loaded one, with its unloaded history out of reach. The view therefore hides every message older than the display floor (`display_floor`): the newest oldest-loaded date among threads that still have more, counting unknown as more. An older page targets only the threads at the floor. When one reaches the top of its history, the floor drops and the other threads' hidden messages appear in order. The request range still counts hidden messages, because the daemon pages by index, not by what is shown.
 
-Each request is `requestConversation(threadId, 0, loaded_count + page)` — **the offset is pinned to 0 here for the same reason as the truncation retry above**: a non-zero `start` segfaults kdeconnectd 23.08.5.
+Each request is `requestConversation(threadId, 0, loaded_count + page)` — **the offset is pinned to 0 here for the same reason as the first page's re-read above**: a non-zero `start` segfaults kdeconnectd 23.08.5.
 
 ### Recovery after a restart or reconnect
 
@@ -168,7 +166,8 @@ The message bump also resets the thread's load bookkeeping (`messages`, `known_m
 `thread_has_more`, `older_page`, `messages_has_more`, `initial_load_complete`), mirroring
 `OpenConversation`. Without it the re-streamed page dedups against stale uids and `messages`
 becomes the union of pre- and post-restart data — so a recovered thread is a fresh first page, not
-a merge.
+a merge. It sets the same loading state the open does, so the view shows the loading text, not
+"No messages", until the page returns.
 
 A daemon exit is also detected directly: `NameOwnerChanged` for `org.kde.kdeconnect` with an empty
 new owner marks every device unreachable at once, so the edge is observed even when the daemon is
@@ -182,18 +181,15 @@ Replies call `sendSms(addresses, message, attachments, subID)` on the SMS plugin
 Connected selects (`reply_recipients`, see "Recipient rule" above) and the reference message's `subID`. Connected does 
 not use `replyToConversation`: it resolves recipients from the oldest message in the daemon's in-memory cache, which was 
 the wrong set for 20 of 100 recent threads (D.63), and on a pre-`26.08.0` daemon it needs that cache primed. If no message
-or conversation address is available, Connected shows a status and sends nothing.
+or conversation address is available, Connected shows a status and sends nothing. Android strips the user's own number
+from MMS rows, so in a conversation with yourself an MMS carries no address and the recipient comes from the newest
+SMS row on the page.
 
-On success:
+On `Ok` the draft and staged attachment clear, and a caption under the compose box reads "Sending..." until the phone's sent copy arrives on the thread's long-lived message subscription. Nothing is added to the thread locally: the echo is the only copy of a sent message, so the thread shows only what the daemon reports. Send is disabled only while the D-Bus call is in flight, so an unechoed MMS does not block the next send.
 
-- the conversation preview updates immediately with the latest body and timestamp
-- an optimistic sent bubble is inserted into the open thread
-- the long-lived message subscription reconciles that optimistic entry when the phone echoes back the real sent message
+The echo is matched by type `Sent`, a body equal to the pending reply's, and being the newest message in the thread. The last test stops an older sent message with the same body, arriving from Load older or the initial load, from matching; every date in the thread is the phone's, so it has no clock skew, and a miss leaves the reply unconfirmed rather than wrongly confirmed. The match is scoped to the open merged set, so an echo on a sibling thread in `merged_thread_ids` still clears it. Because the phone files a reply by its recipient set, the echo lands on the canonical thread, which is in `merged_thread_ids` whenever merging is on.
 
-For merged conversations, optimistic-send reconciliation matches by `OPTIMISTIC_MESSAGE_UID` + body + 5-minute window 
-with no thread-id filter, so an echo arriving on a sibling thread within `merged_thread_ids` still upgrades the optimistic 
-bubble in place. Because the phone files a reply by its recipient set, the echo lands on the canonical thread, which is
-in `merged_thread_ids` whenever merging is on.
+If no echo arrives within `SEND_ECHO_WINDOW_SECS` (60 s), the caption changes to "Not confirmed by your phone", with an excerpt of the body when there is one. The clock only relabels: it never reports success or failure, and a late echo still clears it. The send state (`ReplySend` in `store.rs`) lives with the composer, so leaving the thread clears it. `SmsSendResult` carries the `(device_id, thread_id)` it was sent from, and a result for a thread that is no longer open changes no state, though a failure is still reported.
 
 ### New Messages
 
@@ -211,11 +207,11 @@ Both compose surfaces stage one file for the next send, passed through the `atta
 
 Each compose surface owns its own staged file, `pending_attachment` for the thread view and `new_message_pending_attachment` for New message, cleared wherever its sibling compose state is cleared. A shared field let a file staged in one surface be sent from the other with no chip in sight.
 
-No local preview is built. The optimistic entry carries an empty attachment list and reconciliation adopts the echo's list (`store.rs`, the uid-upgrade step), so the sent bubble renders through the received-message path. Without that adoption an attachment send reconciles cleanly and renders forever without its image.
+No local preview is built. The phone's echo is the only copy of a sent attachment, and it renders through the received-message path.
 
 The chooser is a portal round trip: the dialog takes focus and the panel tears the popup down, and the `SmsAttachmentSelected` and `NewMessageAttachmentSelected` arms in `app.rs` reopen it on every return path, cancel included, unless the panel left it standing. The double-click gap is in `docs/KNOWN_ISSUES.md`.
 
-Send outcome is unknowable for attachments as for text (see "A send has no terminal state" below); the phone side has two literal `// TODO: Notify other end` in `SmsMmsUtils.kt`. Copy may say "sent" in the hand-off sense, never "delivered".
+Send outcome is unknowable for attachments as for text (see "A send is confirmed only by its echo" below); the phone side has two literal `// TODO: Notify other end` in `SmsMmsUtils.kt`. Copy may say "sent" in the hand-off sense, never "delivered".
 
 ### Sync indicator
 
@@ -250,7 +246,7 @@ The KDE Connect daemon sets its Qt application name to `"kdeconnect.daemon"` in 
 
 - `conversationLoaded` reports `m_known_messages[id].size()` - the count of distinct message UIDs the daemon currently holds **in memory** for that thread - not the phone's authoritative total. It is emitted only from `addMessages()`, so it fires only when the phone has delivered a batch, never on a purely cached read.
 - Notification correctness depends on careful `last_seen_sms` handling when opening threads and merging incoming data.
-- **A send has no terminal state.** `Ok` from `sendSms` / `sendWithoutConversation` means the D-Bus call worked, nothing more (`docs/DBUS.md` → "A void method's `Ok`"); the only evidence of delivery is the phone's echo, so an unconfirmed send stays an optimistic bubble with no failed state. The conversation list is not updated optimistically. The row changes when the phone's echo arrives on the live list subscription.
+- **A send is confirmed only by its echo.** `Ok` from `sendSms` / `sendWithoutConversation` means the D-Bus call worked, nothing more (`docs/DBUS.md` → "A void method's `Ok`"). The phone's sent copy is the only evidence, and it means the phone recorded the message as sent, not that it was delivered. A reply with no echo ends at "Not confirmed by your phone", which means unknown, not failed. The conversation list is not updated optimistically. The row changes when the phone's echo arrives on the live list subscription.
 - **History: a pre-`26.08.0` daemon silently discards a `replyToConversation` when the thread is not in its cache.** Connected no longer calls `replyToConversation` (see "Replies"), so this no longer affects it; kept for anyone driving the daemon directly. Upstream BUG 517659, fixed in `3bf16922` and first shipped in `v26.08.0`: `replyToConversation()` logged a warning and dropped the message outright when `m_conversations` did not hold the target thread, which is the state after a device reconnect, or before the list has loaded for the session. **This is the daemon's behaviour, not applet logic**. 
 - **An attachment-only MMS can echo back without its attachment.** A text-less send sometimes come back with `eventField 0` and an empty attachment list, so the bubble renders as a bare timestamp. No pattern found; upstream. See `docs/KNOWN_ISSUES.md`.
 
@@ -263,8 +259,7 @@ Messages (see `app.rs`):
 - `ConversationReceived` — cached or newly discovered conversation summary
 - `ConversationSyncStarted` / `ConversationSyncComplete` — spinner lifecycle for the list
 - `ConversationMessageReceived` — individual message during thread load or live updates
-- `ConversationStoreLoaded` — the daemon's cached read finished (triggers initial scroll). The `Store` in the name is historical and does not mean a persistent store; see "Where the daemon's data actually lives"
-- `ConversationLoadComplete` - the page is in, `received >= min(page, daemon count)`, or a net expired (sets `initial_load_complete`)
+- `ConversationLoaded` - a `conversationLoaded` signal for an open thread: the daemon's known count, an upper bound on what its cache serves
 
 Timeout constants (see `constants.rs`):
 
@@ -272,9 +267,6 @@ Timeout constants (see `constants.rs`):
 - `CONVERSATION_TIMEOUT_CACHED_SECS` — warm-start bootstrap window
 - `CONVERSATION_LIST_QUIET_MS` — quiet-window settle after bootstrap activity
 - `CONVERSATION_LIST_RETRY_THRESHOLD` / `CONVERSATION_LIST_RETRY_WAIT_MS` — cold-start retry gate and window
-- `PHONE_RESPONSE_TIMEOUT_MS` - net after `conversationLoaded` for a page that never fills; its `<= 1` branch fires the one-shot re-read
-- `CONVERSATION_RETRY_WAIT_MS` - settle window after that one-shot Conversations-interface re-read
-- `MESSAGE_SUBSCRIPTION_TIMEOUT_SECS` - 20 s no-signal net, restarted by every received message
 - `NEW_MESSAGE_SYNC_INDICATOR_SECS` — post-send window the conversation-list sync indicator stays up while waiting for the phone to report the new conversation
 
 D-Bus surface:

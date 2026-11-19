@@ -16,10 +16,8 @@ use crate::media::{
     fetch_media_info_async, media_action_async, view_media_controls, MediaAction,
     MediaControlsParams,
 };
-use crate::sms::{prefetch_conversations_async, SmsConversationStore, SmsViewMode};
-use crate::subscriptions::{
-    call_notification_subscription, dbus_signal_subscription, sms_notification_subscription,
-};
+use crate::sms::{ReplySend, SmsConversationStore, SmsViewMode};
+use crate::subscriptions::dbus_signal_subscription;
 use crate::ui;
 use crate::views::send_to::{view_send_to, view_share_text, SendToParams, ShareTextParams};
 use crate::views::settings::{view_about, view_settings};
@@ -49,8 +47,6 @@ pub enum Message {
     PopupClosed(window::Id),
     /// (output name, logical height) from a Wayland output event
     OutputHeight(String, f32),
-    /// Refresh device list
-    RefreshDevices,
     /// Prod the daemon to re-scan the network, then refresh (manual Refresh button)
     ForceReconnect,
     /// Retry reaching KDE Connect from an error empty-list card. Re-establishes
@@ -98,7 +94,7 @@ pub enum Message {
     /// Initiate file sharing (opens file picker)
     ShareFile(String),
     /// File was selected from picker
-    FileSelected(Option<PathBuf>),
+    FileSelected(String, Option<PathBuf>),
     /// Initiate text sharing
     ShareText(String, String),
     /// Share operation completed
@@ -168,8 +164,6 @@ pub enum Message {
     // SMS
     /// Open SMS view for a device
     OpenSmsView(String),
-    /// Prefetched conversations ready from device selection background fetch
-    SmsPrefetchReady(String, Vec<ConversationSummary>),
     /// Close SMS view and return to device list
     CloseSmsView,
     /// Open a specific conversation thread
@@ -195,8 +189,10 @@ pub enum Message {
     ClearNewMessageAttachment,
     /// Send SMS in current thread
     SendSms,
-    /// SMS send operation completed
-    SmsSendResult(Result<String, String>),
+    /// A reply send finished; keyed by (device_id, thread_id) it was sent from
+    SmsSendResult((String, i64), Result<(), String>),
+    /// The echo window for the send with this generation has passed
+    SendEchoWindowElapsed(u64),
     /// Open new message compose view
     OpenNewMessage,
     /// Close new message view
@@ -218,15 +214,13 @@ pub enum Message {
         device_id: String,
     },
     /// New message send result
-    NewMessageSendResult(Result<String, String>),
-    /// Ack that an older-page `requestConversation` was fired (`ok`) or failed.
-    /// Carries no messages - those stream in via `ConversationMessagesReceived`.
-    OlderMessagesRequested {
+    NewMessageSendResult(Result<(), String>),
+    /// Ack that a `requestConversation` range was fired (`ok`) or failed.
+    /// Carries no messages; those stream in via `ConversationMessageReceived`.
+    ConversationRangeRequested {
         thread_id: i64,
         ok: bool,
     },
-    /// Message thread scrolled - used for prefetching older messages
-    MessageThreadScrolled(scrollable::Viewport),
     /// User pressed Load older at the top of the thread
     LoadOlderMessages,
     /// User started pressing a message bubble (for long-press copy)
@@ -283,7 +277,7 @@ pub enum Message {
     // Call Notifications
     /// Incoming or missed call received via D-Bus signal
     CallNotification {
-        device_name: String,
+        device_id: String,
         event: String,
         phone_number: String,
         contact_name: String,
@@ -303,17 +297,11 @@ pub enum Message {
         thread_id: i64,
         message: SmsMessage,
     },
-    /// `conversationLoaded` arrived: the daemon holds `total_count` for this thread.
-    /// Scroll to newest and keep listening; on a fetch the page follows this signal.
-    ConversationStoreLoaded {
+    /// `conversationLoaded`: the phone delivered a batch and the daemon now knows
+    /// `count` uids for the thread, an upper bound on what its cache can serve.
+    ConversationLoaded {
         thread_id: i64,
-        total_count: u64,
-    },
-    /// Initial load complete (page target met, or a clock fired with it unfilled).
-    /// Finalize; the subscription keeps listening until the conversation closes.
-    ConversationLoadComplete {
-        thread_id: i64,
-        total_count: u64,
+        count: u64,
     },
     /// Fire-and-forget D-Bus request completed, start listening for signals
     ConversationLoadStarted {
@@ -522,8 +510,6 @@ pub struct ConnectApplet {
     view_mode: ViewMode,
     /// Currently selected device ID (for device page navigation)
     selected_device: Option<String>,
-    /// Device ID awaiting file selection from file picker
-    pending_share_device: Option<String>,
     /// Text input for sharing
     share_text_input: String,
     /// Timestamp of last D-Bus signal refresh (for debouncing)
@@ -650,9 +636,9 @@ impl ConnectApplet {
                 self.set_status(msg);
                 cosmic::app::Task::none()
             }
-            crate::sms::SmsReply::NewMessageSent(msg) => {
+            crate::sms::SmsReply::NewMessageSent => {
                 self.set_view(ViewMode::ConversationList);
-                self.set_transient_status(msg)
+                cosmic::app::Task::none()
             }
             crate::sms::SmsReply::SetStatus(None) => {
                 // An explicit clear by the store; no new status, so the generation stays.
@@ -674,26 +660,31 @@ impl ConnectApplet {
         cosmic::app::Task::batch([sms_task, reply_task])
     }
 
-    fn pick_attachment(
+    fn pick_file(
+        title: String,
         to_message: impl FnOnce(Option<std::path::PathBuf>) -> Message + Send + 'static,
     ) -> cosmic::app::Task<Message> {
         cosmic::task::future(async move {
             use cosmic::dialog::file_chooser;
             let result = file_chooser::open::Dialog::new()
-                .title(fl!("attach-file"))
+                .title(title)
                 .open_file()
                 .await;
             match result {
-                Ok(response) => to_message(
-                    response
-                        .0
-                        .uris()
-                        .first()
-                        .and_then(|u| u.to_file_path().ok()),
-                ),
+                Ok(response) => to_message(response.url().to_file_path().ok()),
                 Err(_) => to_message(None),
             }
         })
+    }
+
+    /// The chooser takes focus and the panel tears the popup down. Bring it
+    /// back on every result, cancel included, unless the panel left it standing.
+    fn reopen_after_chooser(&self) -> cosmic::app::Task<Message> {
+        if self.popup.is_none() {
+            Self::open_popup_task()
+        } else {
+            cosmic::app::Task::none()
+        }
     }
 }
 
@@ -730,7 +721,6 @@ impl Application for ConnectApplet {
             loading: true,
             view_mode: ViewMode::DeviceList,
             selected_device: None,
-            pending_share_device: None,
             share_text_input: String::new(),
             last_signal_refresh: std::time::Instant::now(),
             signal_refresh_pending: false,
@@ -812,16 +802,6 @@ impl Application for ConnectApplet {
                     None => Self::connect_dbus_task(),
                 };
             }
-            Message::RefreshDevices => {
-                if let Some(conn) = &self.dbus_connection {
-                    tracing::debug!("Refreshing device list");
-                    self.loading = true;
-                    return cosmic::app::Task::perform(
-                        fetch_devices_async(conn.clone()),
-                        cosmic::Action::App,
-                    );
-                }
-            }
             Message::DevicesUpdated(devices) => {
                 // If the SMS device just came back reachable, the daemon likely restarted
                 // or the phone rejoined and whatever we had in flight was orphaned. Bump
@@ -877,6 +857,10 @@ impl Application for ConnectApplet {
                             // `messages` becomes the union of pre- and post-restart
                             // data.
                             self.sms.reset_thread_state();
+                            // Show the reload as an open does; not as an empty conversation
+                            self.sms.sms_loading_state =
+                                SmsLoadingState::LoadingMessages(LoadingPhase::Connecting);
+                            self.sms.message_sync_active = false;
                             self.sms.conversation_message_subscription_generation = self
                                 .sms
                                 .conversation_message_subscription_generation
@@ -958,20 +942,11 @@ impl Application for ConnectApplet {
                 self.selected_device = Some(device_id.clone());
                 self.set_view(ViewMode::DevicePage);
                 self.share_text_input.clear();
-
-                // Prefetch SMS conversations so they're ready when user opens SMS
-                if let Some(conn) = &self.dbus_connection {
-                    return cosmic::app::Task::perform(
-                        prefetch_conversations_async(conn.clone(), device_id),
-                        cosmic::Action::App,
-                    );
-                }
             }
             Message::BackToList => {
                 self.selected_device = None;
                 self.set_view(ViewMode::DeviceList);
                 self.share_text_input.clear();
-                self.sms.sms_prefetch = None;
                 self.pairing_error = None;
             }
             Message::OpenSendToView(device_id, device_type) => {
@@ -999,7 +974,7 @@ impl Application for ConnectApplet {
             // Ping
             Message::SendPing(device_id) => {
                 if let Some(conn) = self.dbus_connection.clone() {
-                    self.set_status("Sending ping...".to_string());
+                    self.set_status(fl!("sending-ping"));
                     return cosmic::app::Task::perform(
                         send_ping_async(conn.clone(), device_id),
                         |result| cosmic::Action::App(Message::PingComplete(result)),
@@ -1009,11 +984,11 @@ impl Application for ConnectApplet {
             Message::PingComplete(result) => match result {
                 Ok(()) => {
                     tracing::info!("Ping sent successfully");
-                    return self.set_transient_status("Ping sent!".to_string());
+                    return self.set_transient_status(fl!("ping-sent"));
                 }
                 Err(e) => {
                     tracing::error!("Ping failed: {}", e);
-                    return self.set_transient_status(format!("Ping failed: {}", e));
+                    return self.set_transient_status(format!("{}: {}", fl!("ping-failed"), e));
                 }
             },
 
@@ -1049,62 +1024,40 @@ impl Application for ConnectApplet {
                 else {
                     return cosmic::app::Task::none();
                 };
-                return Self::pick_attachment(move |path| {
+                return Self::pick_file(fl!("attach-file"), move |path| {
                     Message::SmsAttachmentSelected((device_id, thread_id), path)
                 });
             }
 
             Message::AttachToNewMessage => {
-                return Self::pick_attachment(Message::NewMessageAttachmentSelected)
+                return Self::pick_file(fl!("attach-file"), Message::NewMessageAttachmentSelected)
             }
 
-            // The portal dialog takes focus and the panel tears the popup
-            // down. Bring it back on every path, cancel included, unless
-            // the panel left it standing.
             Message::SmsAttachmentSelected(..) | Message::NewMessageAttachmentSelected(_) => {
-                let reopen = if self.popup.is_none() {
-                    Self::open_popup_task()
-                } else {
-                    cosmic::app::Task::none()
-                };
+                let reopen = self.reopen_after_chooser();
                 let staged = self.delegate_to_sms(message);
                 return cosmic::app::Task::batch([reopen, staged]);
             }
 
             // Share
             Message::ShareFile(device_id) => {
-                self.pending_share_device = Some(device_id);
-                return cosmic::task::future(async {
-                    use cosmic::dialog::file_chooser;
-                    let result = file_chooser::open::Dialog::new()
-                        .title("Share File")
-                        .open_file()
-                        .await;
-                    match result {
-                        Ok(response) => Message::FileSelected(
-                            response
-                                .0
-                                .uris()
-                                .first()
-                                .and_then(|u| u.to_file_path().ok()),
-                        ),
-                        Err(_) => Message::FileSelected(None),
-                    }
+                return Self::pick_file(fl!("share-file"), move |path| {
+                    Message::FileSelected(device_id, path)
                 });
             }
-            Message::FileSelected(path) => {
-                if let (Some(conn), Some(device_id)) = (
-                    self.dbus_connection.clone(),
-                    self.pending_share_device.take(),
-                ) {
-                    if let Some(path) = path {
-                        self.set_status("Sharing file...".to_string());
-                        return cosmic::app::Task::perform(
-                            share_file_async(conn.clone(), device_id, path),
+            Message::FileSelected(device_id, path) => {
+                let reopen = self.reopen_after_chooser();
+                let share = match (self.dbus_connection.clone(), path) {
+                    (Some(conn), Some(path)) => {
+                        self.set_status(fl!("sharing-file"));
+                        cosmic::app::Task::perform(
+                            share_file_async(conn, device_id, path),
                             |result| cosmic::Action::App(Message::ShareComplete(result)),
-                        );
+                        )
                     }
-                }
+                    _ => cosmic::app::Task::none(),
+                };
+                return cosmic::app::Task::batch([reopen, share]);
             }
             Message::ShareTextInput(text) => {
                 self.share_text_input = text;
@@ -1113,7 +1066,7 @@ impl Application for ConnectApplet {
                 if !text.is_empty() {
                     if let Some(conn) = self.dbus_connection.clone() {
                         self.share_text_input.clear();
-                        self.set_status("Sharing text...".to_string());
+                        self.set_status(fl!("sharing-text"));
                         return cosmic::app::Task::perform(
                             share_text_async(conn.clone(), device_id, text),
                             |result| cosmic::Action::App(Message::ShareComplete(result)),
@@ -1124,11 +1077,11 @@ impl Application for ConnectApplet {
             Message::ShareComplete(result) => match result {
                 Ok(()) => {
                     tracing::info!("Share completed successfully");
-                    return self.set_transient_status("Shared successfully!".to_string());
+                    return self.set_transient_status(fl!("share-complete"));
                 }
                 Err(e) => {
                     tracing::error!("Share failed: {}", e);
-                    return self.set_transient_status(format!("Share failed: {}", e));
+                    return self.set_transient_status(format!("{}: {}", fl!("share-failed"), e));
                 }
             },
             Message::ConfigChanged(config) => {
@@ -1146,7 +1099,7 @@ impl Application for ConnectApplet {
                 if let Some(conn) = self.dbus_connection.clone() {
                     tracing::info!("Requesting pairing with device: {}", device_id);
                     self.pairing_error = None;
-                    self.set_status("Pairing request sent...".to_string());
+                    self.set_status(fl!("pairing-request-sent"));
                     return cosmic::app::Task::perform(
                         request_pair_async(conn.clone(), device_id),
                         cosmic::Action::App,
@@ -1170,7 +1123,7 @@ impl Application for ConnectApplet {
                         self.selected_device = None;
                         self.set_view(ViewMode::DeviceList);
                     }
-                    self.set_status("Unpairing...".to_string());
+                    self.set_status(fl!("unpairing"));
 
                     return cosmic::app::Task::perform(
                         unpair_async(conn.clone(), device_id),
@@ -1182,7 +1135,7 @@ impl Application for ConnectApplet {
                 if let Some(conn) = self.dbus_connection.clone() {
                     tracing::info!("Accepting pairing from device: {}", device_id);
                     self.pairing_error = None;
-                    self.set_status("Accepting pairing...".to_string());
+                    self.set_status(fl!("accepting-pairing"));
                     return cosmic::app::Task::perform(
                         accept_pairing_async(conn.clone(), device_id),
                         cosmic::Action::App,
@@ -1194,7 +1147,7 @@ impl Application for ConnectApplet {
                     tracing::info!("Rejecting/cancelling pairing for device: {}", device_id);
                     self.pairing_error = None;
                     self.pairing_cancel_expected = Some(device_id.clone());
-                    self.set_status("Rejecting pairing...".to_string());
+                    self.set_status(fl!("rejecting-pairing"));
                     return cosmic::app::Task::perform(
                         reject_pairing_async(conn.clone(), device_id),
                         cosmic::Action::App,
@@ -1209,7 +1162,7 @@ impl Application for ConnectApplet {
                     }
                     Err(err) => {
                         tracing::error!("Pairing error: {}", err);
-                        self.set_status(format!("Error: {}", err));
+                        self.set_status(format!("{}: {}", fl!("error"), err));
                     }
                 }
                 // Refresh devices to update pairing state
@@ -1300,7 +1253,7 @@ impl Application for ConnectApplet {
                     Ok(msg) => tracing::info!("Dismiss result: {}", msg),
                     Err(err) => {
                         tracing::error!("Dismiss error: {}", err);
-                        self.set_status(format!("Failed to dismiss: {}", err));
+                        self.set_status(format!("{}: {}", fl!("dismiss-failed"), err));
                     }
                 }
                 // Refresh devices to update notification list
@@ -1316,7 +1269,7 @@ impl Application for ConnectApplet {
             Message::SendClipboard(device_id) => {
                 if let Some(conn) = self.dbus_connection.clone() {
                     tracing::info!("Sending clipboard to device: {}", device_id);
-                    self.set_status("Sending clipboard...".to_string());
+                    self.set_status(fl!("sending-clipboard"));
                     return cosmic::app::Task::perform(
                         send_clipboard_async(conn.clone(), device_id),
                         cosmic::Action::App,
@@ -1330,7 +1283,11 @@ impl Application for ConnectApplet {
                 }
                 Err(err) => {
                     tracing::error!("Clipboard error: {}", err);
-                    return self.set_transient_status(format!("Clipboard error: {}", err));
+                    return self.set_transient_status(format!(
+                        "{}: {}",
+                        fl!("clipboard-failed"),
+                        err
+                    ));
                 }
             },
 
@@ -1349,12 +1306,10 @@ impl Application for ConnectApplet {
                 self.set_view(ViewMode::DeviceList);
             }
             Message::OpenUrl(url) => {
-                return cosmic::app::Task::perform(
-                    async move {
-                        let _ = tokio::process::Command::new("xdg-open").arg(url).spawn();
-                    },
-                    |_| cosmic::Action::App(Message::RefreshDevices),
-                );
+                return cosmic::Task::future(async move {
+                    let _ = tokio::process::Command::new("xdg-open").arg(url).spawn();
+                })
+                .discard();
             }
             Message::ToggleSetting(key) => {
                 match key {
@@ -1444,13 +1399,6 @@ impl Application for ConnectApplet {
                         cosmic::app::Task::none()
                     };
 
-                    // Check if we have prefetched conversations for this device
-                    let has_prefetch = self
-                        .sms
-                        .sms_prefetch
-                        .as_ref()
-                        .is_some_and(|(id, convs)| id == &device_id && !convs.is_empty());
-
                     if has_cache {
                         // Show the cached list now; the list subscription streams the
                         // daemon's bootstrap on top of it
@@ -1463,30 +1411,6 @@ impl Application for ConnectApplet {
                             device_id
                         );
                         // The list subscription takes it from here
-                        return contacts_task;
-                    } else if has_prefetch {
-                        // Use prefetched conversations from device selection
-                        if let Some((_, prefetched)) = self.sms.sms_prefetch.take() {
-                            // Seed last_seen_sms to prevent false notifications
-                            for conv in &prefetched {
-                                let key = (device_id.clone(), conv.thread_id);
-                                let current = self.sms.last_seen_sms.get(&key).copied();
-                                if current.is_none() || current < Some(conv.timestamp) {
-                                    self.sms.last_seen_sms.insert(key, conv.timestamp);
-                                }
-                            }
-                            // Seed raw_conversations and re-derive so the merge toggle works before the subscription's first refresh.
-                            self.sms.raw_conversations = prefetched;
-                            self.sms.rederive_conversations(&self.config);
-                            self.sms.sms_loading_state = SmsLoadingState::Idle;
-                            self.sms.conversation_sync_active = true;
-                            self.sms.conversation_list_subscription_active = true;
-                            tracing::info!(
-                                "Using prefetched {} conversations for device: {}, starting subscription-based sync",
-                                self.sms.conversations.len(),
-                                device_id
-                            );
-                        }
                         return contacts_task;
                     } else {
                         // No cache or different device - subscription-based loading
@@ -1517,11 +1441,11 @@ impl Application for ConnectApplet {
                 self.sms.sms_loading_state = SmsLoadingState::Idle;
                 self.sms.conversation_sync_active = false;
                 self.sms.new_message_sync_active = false;
+                self.sms.conversation_load_active = false;
                 self.sms.conversation_list_subscription_active = false;
                 self.sms.sms_compose_text = widget::text_editor::Content::new();
                 self.sms.pending_attachment = None;
-                self.sms.sms_sending = false;
-                self.sms.sms_sending_body = None;
+                self.sms.reply_send = ReplySend::Idle;
             }
             Message::OpenConversation(thread_id) => {
                 // Guard: need D-Bus connection and device ID for the subscription
@@ -1562,6 +1486,7 @@ impl Application for ConnectApplet {
                     // DevicesUpdated recovery reoloads the open thread and must keep the draft.
                     self.sms.sms_compose_text = widget::text_editor::Content::new();
                     self.sms.pending_attachment = None;
+                    self.sms.reply_send = ReplySend::Idle;
 
                     // The subscription fires the D-Bus request after setting up match rules
                     self.sms.conversation_load_active = true;
@@ -1585,8 +1510,7 @@ impl Application for ConnectApplet {
                 self.sms.reset_thread_state();
                 self.sms.sms_compose_text = widget::text_editor::Content::new();
                 self.sms.pending_attachment = None;
-                self.sms.sms_sending = false;
-                self.sms.sms_sending_body = None;
+                self.sms.reply_send = ReplySend::Idle;
                 self.sms.message_sync_active = false;
 
                 // Clear subscription-based loading state
@@ -1789,7 +1713,7 @@ impl Application for ConnectApplet {
             }
             Message::MediaActionResult(result) => {
                 let clear_task = if let Err(err) = result {
-                    self.set_transient_status(format!("Media error: {}", err))
+                    self.set_transient_status(format!("{}: {}", fl!("media-failed"), err))
                 } else {
                     cosmic::app::Task::none()
                 };
@@ -1825,11 +1749,20 @@ impl Application for ConnectApplet {
 
             // Call Notifications
             Message::CallNotification {
-                device_name,
+                device_id,
                 event,
                 phone_number,
                 contact_name,
             } => {
+                if !self.config.call_notifications {
+                    return cosmic::app::Task::none();
+                }
+                let device_name = self
+                    .devices
+                    .iter()
+                    .find(|d| d.id == device_id)
+                    .map(|d| d.name.clone())
+                    .unwrap_or(device_id);
                 // Build notification based on event type and privacy settings
                 let (summary, icon, urgency, timeout_ms) = match event.as_str() {
                     "callReceived" => {
@@ -1882,24 +1815,22 @@ impl Application for ConnectApplet {
                 );
 
                 // Show notification
-                return cosmic::app::Task::perform(
-                    async move {
-                        let mut notification = notify_rust::Notification::new();
-                        notification
-                            .summary(&summary)
-                            .body(&device_name)
-                            .icon(icon)
-                            .appname("Connected")
-                            .urgency(urgency)
-                            .timeout(notify_rust::Timeout::Milliseconds(timeout_ms));
-                        match tokio::task::spawn_blocking(move || notification.show()).await {
-                            Ok(Ok(_handle)) => tracing::debug!("Call notification shown"),
-                            Ok(Err(e)) => tracing::warn!("Failed to show call notification: {}", e),
-                            Err(e) => tracing::warn!("Call notification task panicked: {}", e),
-                        }
-                    },
-                    |_| cosmic::Action::App(Message::RefreshDevices),
-                );
+                return cosmic::Task::future(async move {
+                    let mut notification = notify_rust::Notification::new();
+                    notification
+                        .summary(&summary)
+                        .body(&device_name)
+                        .icon(icon)
+                        .appname("Connected")
+                        .urgency(urgency)
+                        .timeout(notify_rust::Timeout::Milliseconds(timeout_ms));
+                    match tokio::task::spawn_blocking(move || notification.show()).await {
+                        Ok(Ok(_handle)) => tracing::debug!("Call notification shown"),
+                        Ok(Err(e)) => tracing::warn!("Failed to show call notification: {}", e),
+                        Err(e) => tracing::warn!("Call notification task panicked: {}", e),
+                    }
+                })
+                .discard();
             }
 
             // File Notifications
@@ -1927,27 +1858,25 @@ impl Application for ConnectApplet {
                     let summary = fl!("file-received-from", device = device_name.clone());
                     let file_name_clone = file_name.clone();
 
-                    return cosmic::app::Task::perform(
-                        async move {
-                            let mut notification = notify_rust::Notification::new();
-                            notification
-                                .summary(&summary)
-                                .body(&file_name_clone)
-                                .icon("folder-download-symbolic")
-                                .appname("Connected")
-                                .timeout(notify_rust::Timeout::Milliseconds(
-                                    NORMAL_NOTIFICATION_TIMEOUT_MS,
-                                ));
-                            match tokio::task::spawn_blocking(move || notification.show()).await {
-                                Ok(Ok(_handle)) => tracing::debug!("File notification shown"),
-                                Ok(Err(e)) => {
-                                    tracing::warn!("Failed to show file notification: {}", e)
-                                }
-                                Err(e) => tracing::warn!("File notification task panicked: {}", e),
+                    return cosmic::Task::future(async move {
+                        let mut notification = notify_rust::Notification::new();
+                        notification
+                            .summary(&summary)
+                            .body(&file_name_clone)
+                            .icon("folder-download-symbolic")
+                            .appname("Connected")
+                            .timeout(notify_rust::Timeout::Milliseconds(
+                                NORMAL_NOTIFICATION_TIMEOUT_MS,
+                            ));
+                        match tokio::task::spawn_blocking(move || notification.show()).await {
+                            Ok(Ok(_handle)) => tracing::debug!("File notification shown"),
+                            Ok(Err(e)) => {
+                                tracing::warn!("Failed to show file notification: {}", e)
                             }
-                        },
-                        |_| cosmic::Action::App(Message::RefreshDevices),
-                    );
+                            Err(e) => tracing::warn!("File notification task panicked: {}", e),
+                        }
+                    })
+                    .discard();
                 }
             }
 
@@ -1955,15 +1884,13 @@ impl Application for ConnectApplet {
             // The 6 SMS lifecycle arms (OpenSmsView, CloseSmsView, OpenConversation,
             // CloseConversation, OpenNewMessage, CloseNewMessage) stay inline above
             // because they touch view_mode (app-owned).
-            Message::SmsPrefetchReady(_, _)
-            | Message::ContactsLoaded(_, _)
+            Message::ContactsLoaded(_, _)
             | Message::ConversationReceived { .. }
             | Message::NewMessageSyncSettle { .. }
             | Message::ConversationSyncStarted { .. }
             | Message::ConversationSyncComplete { .. }
             | Message::ConversationListStreamEnded { .. }
-            | Message::OlderMessagesRequested { .. }
-            | Message::MessageThreadScrolled(_)
+            | Message::ConversationRangeRequested { .. }
             | Message::LoadOlderMessages
             | Message::BubblePressStarted { .. }
             | Message::BubblePressReleased
@@ -1972,12 +1899,12 @@ impl Application for ConnectApplet {
             | Message::ConversationLoadStarted { .. }
             | Message::ConversationsBatchReceived { .. }
             | Message::ConversationMessageReceived { .. }
-            | Message::ConversationStoreLoaded { .. }
-            | Message::ConversationLoadComplete { .. }
+            | Message::ConversationLoaded { .. }
             | Message::SmsError(_)
             | Message::SmsComposeAction(_)
             | Message::SendSms
-            | Message::SmsSendResult(_)
+            | Message::SmsSendResult(_, _)
+            | Message::SendEchoWindowElapsed(_)
             | Message::ClearSmsAttachment
             | Message::NewMessageRecipientInput(_)
             | Message::NewMessageBodyAction(_)
@@ -2203,25 +2130,11 @@ impl Application for ConnectApplet {
             );
         }
 
-        // Add SMS notification subscription when enabled and devices are connected
-        if self.config.sms_notifications
-            && self.devices.iter().any(|d| d.is_reachable && d.is_paired)
-        {
-            subscriptions.push(Subscription::run(sms_notification_subscription));
-        }
-
-        // Add call notification subscription when enabled and devices are connected
-        if self.config.call_notifications
-            && self.devices.iter().any(|d| d.is_reachable && d.is_paired)
-        {
-            subscriptions.push(Subscription::run(call_notification_subscription));
-        }
-
         // SMS-state-driven subscriptions (conversation list + per-thread messages)
         subscriptions.extend(self.sms.subscriptions());
 
-        // Note: File notifications are handled in the main dbus_signal_subscription
-        // to avoid issues with multiple D-Bus connections and match rules
+        // Note: SMS, call and file notifications are all handled in
+        // dbus_signal_subscription, which already receives every daemon signal.
 
         Subscription::batch(subscriptions)
     }

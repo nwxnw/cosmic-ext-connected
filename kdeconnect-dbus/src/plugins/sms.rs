@@ -11,26 +11,6 @@ use zbus::zvariant::{OwnedValue, Value};
     default_service = "org.kde.kdeconnect"
 )]
 pub trait Sms {
-    /// Request the phone to send all conversation threads.
-    /// This triggers the phone to send conversation data which can then be
-    /// retrieved via the Conversations interface.
-    #[zbus(name = "requestAllConversations")]
-    fn request_all_conversations(&self) -> zbus::Result<()>;
-
-    /// Request messages from a specific conversation.
-    ///
-    /// # Arguments
-    /// * `thread_id` - The conversation thread ID
-    /// * `start_timestamp` - Timestamp to start from (0 for all)
-    /// * `count` - Maximum number of messages to return
-    #[zbus(name = "requestConversation")]
-    fn request_conversation(
-        &self,
-        thread_id: i64,
-        start_timestamp: i64,
-        count: i64,
-    ) -> zbus::Result<()>;
-
     /// Request a full-size attachment from the phone.
     ///
     /// The daemon checks its cache first, and requests from the phone if needed.
@@ -44,8 +24,6 @@ pub trait Sms {
     fn get_attachment(&self, part_id: i64, unique_identifier: &str) -> zbus::Result<()>;
 
     /// Send an SMS message directly via the SMS plugin.
-    /// This is more reliable than replyToConversation as it doesn't depend
-    /// on the daemon's conversation cache.
     ///
     /// # Arguments
     /// * `addresses` - List of recipient addresses (phone numbers as D-Bus structs)
@@ -96,20 +74,6 @@ pub trait Conversations {
     /// The msg parameter contains the conversation data as a variant.
     #[zbus(signal, name = "conversationCreated")]
     fn conversation_created(&self, msg: OwnedValue) -> zbus::Result<()>;
-
-    /// Reply to an existing conversation thread with a text message.
-    ///
-    /// # Arguments
-    /// * `conversation_id` - The thread ID to reply to
-    /// * `message` - The text message to send
-    /// * `attachment_urls` - URLs of attachments (empty for text-only messages)
-    #[zbus(name = "replyToConversation")]
-    fn reply_to_conversation(
-        &self,
-        conversation_id: i64,
-        message: &str,
-        attachment_urls: Vec<Value<'_>>,
-    ) -> zbus::Result<()>;
 
     /// Send a message to a recipient without specifying a conversation ID.
     ///
@@ -178,6 +142,7 @@ pub struct SmsMessage {
     pub body: String,
     /// Phone numbers/addresses of all participants (for group messages).
     /// For 1-on-1 conversations this will have one element.
+    /// Empty when the phone reported none (a self-thread MMS).
     pub addresses: Vec<String>,
     /// Unix timestamp in milliseconds.
     pub date: i64,
@@ -196,10 +161,6 @@ pub struct SmsMessage {
     /// MMS attachments (images, videos, etc.). Empty for plain SMS.
     pub attachments: Vec<Attachment>,
 }
-
-/// Sentinel UID for optimistic messages that haven't been confirmed by the phone yet.
-/// Uses `i32::MIN` to avoid collision with any real Android message UID (positive `i32`).
-pub const OPTIMISTIC_MESSAGE_UID: i32 = i32::MIN;
 
 impl SmsMessage {
     /// Get the primary address (first participant) for display purposes.
@@ -293,33 +254,23 @@ pub fn parse_sms_message(value: &OwnedValue) -> Option<SmsMessage> {
         .and_then(get_string_from_value)
         .unwrap_or_default();
 
-    // Field 2: addresses (array of structs containing string)
-    // Extract ALL addresses for group message support
-    let addresses: Vec<String> = fields
-        .get(2)
-        .and_then(|v| {
-            if let Value::Array(arr) = v {
-                let addrs: Vec<String> = arr
-                    .iter()
-                    .filter_map(|addr_struct| {
-                        // Each address is a struct with a single string field
-                        if let Value::Structure(s) = addr_struct {
-                            s.fields().first().and_then(get_string_from_value)
-                        } else {
-                            get_string_from_value(addr_struct)
-                        }
-                    })
-                    .collect();
-                if addrs.is_empty() {
-                    None
+    // Field 2: addresses (array of structs containing string). Empty when the
+    // phone reported none: Android strips the user's own number from MMS rows,
+    // so a self-thread MMS has no address at all.
+    let addresses: Vec<String> = match fields.get(2) {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|addr_struct| {
+                // Each address is a struct with a single string field
+                if let Value::Structure(s) = addr_struct {
+                    s.fields().first().and_then(get_string_from_value)
                 } else {
-                    Some(addrs)
+                    get_string_from_value(addr_struct)
                 }
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| vec!["Unknown".to_string()]);
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
 
     // Field 3: date (i64)
     let date = fields.get(3).and_then(get_i64_from_value).unwrap_or(0);
@@ -389,55 +340,6 @@ pub fn parse_sms_message(value: &OwnedValue) -> Option<SmsMessage> {
         sub_id,
         attachments,
     })
-}
-
-/// Parse a list of D-Bus variant values into conversation summaries.
-///
-/// Groups messages by thread_id and extracts the most recent message
-/// from each thread to create summaries.
-pub fn parse_conversations(values: Vec<OwnedValue>) -> Vec<ConversationSummary> {
-    let mut messages: Vec<SmsMessage> = values.iter().filter_map(parse_sms_message).collect();
-
-    // Sort by date descending to get most recent first
-    messages.sort_by_key(|m| std::cmp::Reverse(m.date));
-
-    // Group by thread_id and take the first (most recent) message per thread
-    let mut seen_threads = std::collections::HashSet::new();
-    let mut summaries = Vec::new();
-
-    for msg in messages {
-        if seen_threads.contains(&msg.thread_id) {
-            continue;
-        }
-        seen_threads.insert(msg.thread_id);
-
-        let has_attachments = !msg.attachments.is_empty();
-        summaries.push(ConversationSummary {
-            thread_id: msg.thread_id,
-            addresses: msg.addresses,
-            last_message: msg.body,
-            timestamp: msg.date,
-            unread: !msg.read,
-            has_attachments,
-            sub_id: msg.sub_id,
-        });
-    }
-
-    summaries
-}
-
-/// Parse messages for a specific conversation thread.
-pub fn parse_messages(values: Vec<OwnedValue>, thread_id: i64) -> Vec<SmsMessage> {
-    let mut messages: Vec<SmsMessage> = values
-        .iter()
-        .filter_map(parse_sms_message)
-        .filter(|msg| msg.thread_id == thread_id)
-        .collect();
-
-    // Sort by date ascending (oldest first for display)
-    messages.sort_by_key(|m| m.date);
-
-    messages
 }
 
 /// Canonicalize a phone number by removing formatting characters.

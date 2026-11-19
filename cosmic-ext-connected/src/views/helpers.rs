@@ -1,4 +1,5 @@
 //! Helper functions and constants for view rendering.
+use crate::fl;
 
 /// Format a Unix timestamp as a human-readable date/time string.
 pub fn format_timestamp(timestamp: i64) -> String {
@@ -13,7 +14,7 @@ pub fn format_timestamp(timestamp: i64) -> String {
                 dt.format("%b %d").to_string()
             }
         }
-        None => "Unknown".to_string(),
+        None => fl!("unknown"),
     }
 }
 

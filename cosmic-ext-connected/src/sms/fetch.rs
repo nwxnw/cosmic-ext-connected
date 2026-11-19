@@ -1,30 +1,27 @@
 //! SMS conversation and message fetching from KDE Connect.
 
 use crate::app::Message;
-use kdeconnect_dbus::plugins::{parse_conversations, ConversationsProxy, SmsProxy};
+use kdeconnect_dbus::plugins::{ConversationsProxy, SmsProxy};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use zbus::Connection;
 
-/// Ask the daemon to serve an older page of a conversation. The already-running
-/// per-thread subscription receives the resulting `conversationUpdated` signals
-/// through its post-completion listening (`subscriptions.rs`), so this fires the
-/// request and returns - it does NOT collect the reply. Completion is detected
-/// in the store from the streamed messages / `ConversationStoreLoaded`.
+/// Ask the daemon to serve `[0, end)` of a conversation. The open thread's
+/// message subscription receives the resulting signals, so this fires the
+/// request and returns; the store detects completion from them.
 ///
 /// The request is always issued from offset **0**, widening the range rather than
-/// advancing it: `[0, loaded_count + count)`. The daemon serves newest-first, so
+/// advancing it: `[0, end)`. The daemon serves newest-first, so
 /// this returns the same older page, and `crbegin() + 0` can never run past the
 /// end of its cache. A non-zero offset against a cache holding fewer messages
 /// segfaults kdeconnectd 23.08.5 and silently returns nothing on 26.04+. The
 /// applet cannot know the daemon's cache size - every count it holds is stale in
 /// exactly that scenario - so the offset is pinned rather than clamped.
-pub async fn request_older_messages_async(
+pub async fn request_conversation_range_async(
     conn: Arc<Mutex<Connection>>,
     device_id: String,
     thread_id: i64,
-    loaded_count: u32,
-    count: u32,
+    end: u32,
 ) -> Message {
     let conn = conn.lock().await;
     let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
@@ -37,15 +34,18 @@ pub async fn request_older_messages_async(
         Some(fut) => match fut.await {
             Ok(p) => p,
             Err(e) => {
-                tracing::warn!("Failed to build conversations proxy for pagination: {}", e);
-                return Message::OlderMessagesRequested {
+                tracing::warn!(
+                    "Failed to build conversations proxy for range request: {}",
+                    e
+                );
+                return Message::ConversationRangeRequested {
                     thread_id,
                     ok: false,
                 };
             }
         },
         None => {
-            return Message::OlderMessagesRequested {
+            return Message::ConversationRangeRequested {
                 thread_id,
                 ok: false,
             }
@@ -53,26 +53,25 @@ pub async fn request_older_messages_async(
     };
 
     tracing::debug!(
-        "requesting older messages for thread {} (requesting 0-{}, {} already loaded)",
-        thread_id,
-        loaded_count + count,
-        loaded_count
+        "requesting conversation range 0-{} for thread {}",
+        end,
+        thread_id
     );
     match conversations_proxy
-        .request_conversation(thread_id, 0, (loaded_count + count) as i32)
+        .request_conversation(thread_id, 0, end as i32)
         .await
     {
-        Ok(()) => Message::OlderMessagesRequested {
+        Ok(()) => Message::ConversationRangeRequested {
             thread_id,
             ok: true,
         },
         Err(e) => {
             tracing::warn!(
-                "Failed to request older messages for thread {}: {}",
+                "Failed to send range request for thread {}: {}",
                 thread_id,
                 e
             );
-            Message::OlderMessagesRequested {
+            Message::ConversationRangeRequested {
                 thread_id,
                 ok: false,
             }
@@ -153,53 +152,5 @@ pub async fn request_attachment_async(
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    }
-}
-
-/// Prefetch SMS conversations for a device (best-effort, fire-and-forget).
-///
-/// Calls `activeConversations()` once and returns whatever is cached.
-/// Does NOT start signal subscriptions or fire `requestAllConversationThreads()`.
-/// Used by `SelectDevice` to have conversations ready before the user opens SMS.
-pub async fn prefetch_conversations_async(
-    conn: Arc<Mutex<Connection>>,
-    device_id: String,
-) -> Message {
-    let conn = conn.lock().await;
-    let device_path = format!("{}/devices/{}", kdeconnect_dbus::BASE_PATH, device_id);
-
-    let conversations_proxy = match ConversationsProxy::builder(&conn)
-        .path(device_path.as_str())
-        .ok()
-        .map(|b| b.build())
-    {
-        Some(fut) => match fut.await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::debug!("SMS prefetch: failed to create proxy: {}", e);
-                return Message::SmsPrefetchReady(device_id, Vec::new());
-            }
-        },
-        None => {
-            tracing::debug!("SMS prefetch: failed to build proxy path");
-            return Message::SmsPrefetchReady(device_id, Vec::new());
-        }
-    };
-
-    match conversations_proxy.active_conversations().await {
-        Ok(values) => {
-            let mut conversations = parse_conversations(values);
-            conversations.sort_by_key(|c| std::cmp::Reverse(c.timestamp));
-            tracing::debug!(
-                "SMS prefetch: {} conversations for device {}",
-                conversations.len(),
-                device_id
-            );
-            Message::SmsPrefetchReady(device_id, conversations)
-        }
-        Err(e) => {
-            tracing::debug!("SMS prefetch: activeConversations failed: {}", e);
-            Message::SmsPrefetchReady(device_id, Vec::new())
-        }
     }
 }

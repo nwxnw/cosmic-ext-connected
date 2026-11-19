@@ -9,47 +9,30 @@ error = Chyba
 unknown = Neznámé
 device = Zařízení
 devices = Zařízení
-actions = Akce
 refresh = Obnovit
 retry = Zkusit znovu
 
 # Device list
 no-devices = Žádná zařízení
 no-devices-hint = Ujistěte se, že jsou zařízení viditelná.
-loading-devices = Načítání zařízení...
 
 # Device status
 paired = Spárováno
 not-paired = Nespárováno
 connected = Připojeno
-online = Online
 offline = Offline
-available = Dostupné
-discovered = Nalezeno
-battery = Baterie
-battery-level = { $level }%
-charging = nabíjí se
 
 pairing-request = Žádost o spárování
 pairing = Párování...
-connected-paired = Připojeno a spárováno
-paired-offline = Spárováno (offline)
-visible-not-paired = Viditelné, ale nespárované
-pairing-requested-by-device = Žádost o spárování od zařízení
-pairing-request-sent = Žádost o spárování odeslána...
 pairing-failed = Párování selhalo: { $error }
 
 # Device actions
-ping = Ping
 send-ping = Odeslat ping
-share = Sdílet
 share-file = Sdílet soubor
 share-clipboard = Odeslat schránku
 share-text = Sdílet text
 send-text = Odeslat text
-sms = SMS
 sms-messages = SMS zprávy
-messages = Zprávy
 media = Média
 media-controls = Ovládání médií
 notifications = Oznámení
@@ -70,12 +53,8 @@ unpair-offline-note = Toto zařízení je offline. Zrušení párování se na v
 accept = Přijmout
 reject = Odmítnout
 cancel = Zrušit
-pair-request-received = Žádost o spárování od { $device }
-pair-request-sent = Žádost o spárování odeslána
 device-wants-to-pair = Toto zařízení se s vámi chce spárovat
 waiting-for-device = Čekání na potvrzení zařízení...
-device-not-paired = Zařízení není spárováno
-device-offline = Zařízení je offline
 
 # Device type captions (shown under device name on device page)
 device-type-phone = Telefon
@@ -117,7 +96,6 @@ settings-file-section = Přenosy souborů
 settings-file-notifications = Zobrazit oznámení
 
 # File Notification text
-file-received = Soubor přijat
 file-received-from = Soubor přijat od { $device }
 
 # SMS/Messages
@@ -128,13 +106,13 @@ loading-requesting = Načítání z telefonu...
 no-conversations = Žádné konverzace
 loading-messages = Načítání zpráv...
 no-messages = Žádné zprávy
-no-messages-conversation = V této konverzaci nejsou žádné zprávy
-sms-will-appear = SMS zprávy se zobrazí zde
 loading-older = Načítání...
 load-older = Načíst starší zprávy
 syncing = Synchronizování s telefonem...
 syncing-conversations = Synchronizování konverzací...
 hold-to-copy = Podržte pro zkopírování
+sms-not-confirmed = Telefon nepotvrdil doručení
+sms-not-confirmed-excerpt = Telefon nepotvrdil doručení: „{ $excerpt }“
 
 # New message
 new-message = Nová zpráva
@@ -153,29 +131,37 @@ start-playing = Spusťte na telefonu hudbu
 media-not-available = Ovládání médií není k dispozici
 enable-mpris = Ujistěte se, že je zapnutý MPRIS plugin
 player = Přehrávač:
-volume = Hlasitost
 no-track-playing = Nic se nepřehrává
 
 # Share dialog
 share-text-placeholder = Zadejte text nebo URL ke sdílení...
-or-type-text = Nebo napište text...
 
 # Notifications
 dismiss = Zavřít
-no-notifications = Žádná oznámení
 
 # Errors and status
+sms-failed = Odeslání zprávy selhalo
+sms-load-failed = Nepodařilo se načíst zprávy
+sending-ping = Odesílání pingu...
 ping-sent = Ping odeslán!
 ping-failed = Odeslání pingu selhalo
+sharing-file = Sdílení souboru...
+sharing-text = Sdílení textu...
 share-complete = Sdílení dokončeno
 share-failed = Sdílení selhalo
-clipboard-sent = Schránka odeslána!
-clipboard-failed = Odeslání schránky selhalo
-sms-sent = Zpráva odeslána!
-sms-failed = Odeslání zprávy selhalo
+pairing-request-sent = Žádost o spárování odeslána...
+pairing-accept-on-device = Žádost o spárování byla odeslána. Přijměte ji na svém zařízení.
 pairing-accepted = Párování přijato
 pairing-rejected = Párování odmítnuto
+unpairing = Rušení párování...
 unpaired = Párování se zařízením zrušeno
+accepting-pairing = Přijímání žádosti o spárování...
+rejecting-pairing = Odmítání žádosti o spárování...
+sending-clipboard = Odesílání obsahu schránky...
+clipboard-sent = Schránka odeslána!
+clipboard-failed = Odeslání schránky selhalo
+dismiss-failed = Nepodařilo se zavřít oznámení
+media-failed = Ovládání médií selhalo
 
 # Daemon errors
 daemon-unreachable = Nelze se připojit ke KDE Connect
