@@ -57,7 +57,7 @@ device-wants-to-pair = Den här enheten vill para ihop med dig
 waiting-for-device = Väntar på att enhet ska acceptera...
 
 # Inställningssida
-settings-sms-section = SMS meddelanden
+settings-sms-section = SMS-meddelanden
 settings-call-section = Samtal
 settings-file-section = Filöverföringar
 
@@ -73,12 +73,12 @@ notification-duplicate-hint = Inkommande SMS och samtal kan också utlösa KDE C
 learn-more = Läs mer
 
 # Inställningar för SMS-aviseringar
-settings-sms-notifications = SMS-aviseringar
+settings-sms-notifications = Visa aviseringar
 settings-sms-show-content = Visa meddelandeinnehåll
-settings-sms-show-sender = Visa avsändarnamn
+settings-sms-show-sender = Visa avsändare
 
 # Inställningar för samtalsaviseringar
-settings-call-notifications = Samtalsaviseringar
+settings-call-notifications = Visa aviseringar
 settings-call-show-number = Visa telefonnummer
 settings-call-show-name = Visa uppringarens namn
 
@@ -94,7 +94,7 @@ missed-call = Missat samtal
 missed-call-from = Missat samtal från { $name }
 
 # Inställningar för filaviseringar
-settings-file-notifications = Filaviseringar
+settings-file-notifications = Visa aviseringar
 
 # Filmeddelandetext
 file-received-from = Fil mottagen från { $device }
@@ -112,10 +112,8 @@ load-older = Ladda äldre meddelanden
 syncing = Synkroniserar med telefonen...
 syncing-conversations = Synkroniserar konversationer...
 hold-to-copy = Håll nedtryckt för att kopiera
-# TODO: translate
-sms-not-confirmed = Not confirmed by your phone
-# TODO: translate
-sms-not-confirmed-excerpt = Not confirmed by your phone: "{ $excerpt }"
+sms-not-confirmed = Inte bekräftat av din telefon
+sms-not-confirmed-excerpt = Inte bekräftat av din telefon: "{ $excerpt }"
 
 # Nytt meddelande
 new-message = Nytt meddelande
@@ -144,38 +142,28 @@ dismiss = Avfärda
 
 # Fel och status
 sms-failed = Misslyckades med att skicka meddelande
-# TODO: translate
-sms-load-failed = Failed to load messages
-# TODO: translate
-sending-ping = Sending ping...
+sms-load-failed = Misslyckades med att ladda meddelanden
+sending-ping = Skickar ping...
 ping-sent = Ping skickat!
 ping-failed = Misslyckades med att skicka ping
 # TODO: translate
 sharing-file = Sharing file...
-# TODO: translate
-sharing-text = Sharing text...
+sharing-text = Delar text...
 share-complete = Delning är slutförd
 share-failed = Misslyckades att dela
 pairing-request-sent = Parkopplingsförfrågan skickad...
-# TODO: translate
-pairing-accept-on-device = Pairing request sent. Accept it on your device.
+pairing-accept-on-device = Parkopplingsförfrågan skickad. Acceptera den på din enhet.
 pairing-accepted = Parkoppling accepterad
 pairing-rejected = Parkoppling avvisad
-# TODO: translate
-unpairing = Unpairing...
+unpairing = Avparar...
 unpaired = Avparad från enhet
-# TODO: translate
-accepting-pairing = Accepting pairing...
-# TODO: translate
-rejecting-pairing = Rejecting pairing...
-# TODO: translate
-sending-clipboard = Sending clipboard...
+accepting-pairing = Accepterar parkoppling...
+rejecting-pairing = Avvisar parkoppling...
+sending-clipboard = Skickar urklipp...
 clipboard-sent = Urklipp skickat!
 clipboard-failed = Misslyckades med att skicka urklipp
-# TODO: translate
-dismiss-failed = Failed to dismiss notification
-# TODO: translate
-media-failed = Media control failed
+dismiss-failed = Misslyckades att stänga aviseringen
+media-failed = Mediekontroll misslyckades
 
 # Daemon-fel
 daemon-unreachable = Kan inte ansluta till KDE Connect
