@@ -12,6 +12,7 @@
 - Replying in a conversation with yourself no longer goes nowhere when its latest message is a photo or file. If no earlier text message is loaded, Connected says it has no recipient instead.
 - Status messages for ping, sharing, pairing, the clipboard and media controls now appear in your language, and error messages no longer repeat their first words.
 - A conversation open while KDE Connect restarts or your phone reconnects now says it is loading while it reloads, instead of briefly showing no messages.
+- An incoming SMS no longer goes without a notification when Connected was last left showing your messages.
 
 ## [0.9.0] - 2026-10-24
 Photos and files can now be attached to SMS messages, and conversations load, scroll and reply more reliably.

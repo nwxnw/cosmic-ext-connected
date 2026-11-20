@@ -542,15 +542,6 @@ impl SmsConversationStore {
     ) -> cosmic::app::Task<Message> {
         self.first_page.remove(&thread_id);
         self.thread_has_more.insert(thread_id, has_more);
-        if let Some(newest) = self.messages.iter().map(|m| m.date).max() {
-            if let Some(device_id) = self.sms_device_id.clone() {
-                let key = (device_id, thread_id);
-                let current = self.last_seen_sms.get(&key).copied();
-                if current.is_none() || current < Some(newest) {
-                    self.last_seen_sms.insert(key, newest);
-                }
-            }
-        }
         tracing::info!(
             "First page of thread {} settled: detector={}, has_more={}, {} messages across the merged set",
             thread_id,
@@ -862,13 +853,6 @@ impl SmsConversationStore {
 
                 self.rederive_conversations(ctx.config);
 
-                // Update last_seen for notification deduplication
-                let key = (device_id, conversation.thread_id);
-                let current = self.last_seen_sms.get(&key).copied();
-                if current.is_none() || current < Some(conversation.timestamp) {
-                    self.last_seen_sms.insert(key, conversation.timestamp);
-                }
-
                 // Transition from loading spinner to showing data (but keep sync indicator)
                 if matches!(
                     self.sms_loading_state,
@@ -909,12 +893,6 @@ impl SmsConversationStore {
                     .collect();
 
                 for conversation in conversations {
-                    let key = (device_id.clone(), conversation.thread_id);
-                    let current = self.last_seen_sms.get(&key).copied();
-                    if current.is_none() || current < Some(conversation.timestamp) {
-                        self.last_seen_sms.insert(key, conversation.timestamp);
-                    }
-
                     match by_thread.entry(conversation.thread_id) {
                         Entry::Occupied(mut slot) => {
                             if conversation.timestamp > slot.get().timestamp {
