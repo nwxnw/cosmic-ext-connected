@@ -35,7 +35,7 @@ To undo, set it back to `default`.
 
 ## Group Messages and Attachments Sent from the Desktop Never Confirm on Android 17
 
-On Android 17, an MMS sent from the desktop (any group message, or any message with an attachment) is delivered to its recipients but is never recorded as sent on the phone. Connected therefore never receives the sent copy: the message does not appear in the conversation, and after a minute the reply box reads "Not confirmed by your phone". One-to-one text messages go as SMS and are unaffected. This happens on the phone, not in the applet.
+On Android 17, an MMS sent from the desktop (any group message, or any message with an attachment) is delivered to its recipients but is never recorded as sent on the phone. Connected therefore never receives the sent copy: the message does not appear in the conversation, and after a minute the reply box reads "Not confirmed by your phone". One-to-one text messages go as SMS and are unaffected. This happens on the phone, not in the applet. When every recipient uses RCS chat, Google Messages may send the message over RCS instead; see "Group Replies Sent from the Desktop Arrive in a Separate Group Chat on Android 17".
 
 ### Symptoms
 - The recipients receive the message
@@ -51,6 +51,36 @@ Stock Android 17 changed how an MMS from an app other than the default messaging
 
 Send group messages and attachments from the phone until this is resolved. Before resending a message that shows "Not sent", check with a recipient whether it already arrived.
 
+## Group Replies Sent from the Desktop Arrive in a Separate Group Chat on Android 17
+
+On Android 17 with Google Messages as the phone's messaging app, a group message sent from the desktop can be
+delivered in a new group chat instead of the conversation you replied in. Your recipients see the message in that
+new chat too. Nothing reports an error. While reaction replies are grouped into their conversation (the toggle in
+the conversation list), Connected shows the message inside the original conversation, so the split is only visible
+on the phone. One-to-one messages are unaffected. This happens on the phone, not in the applet.
+
+### Symptoms
+- A reply sent from Connected to a group appears on the phone as a separate conversation with the same people
+- Recipients receive it in a new group chat rather than the existing one
+- Later desktop replies to the same group keep going to the new chat
+- It affects groups where everyone uses RCS chat; observed for a group that already had more than one RCS group chat with the same members, while a group with a single RCS chat received its replies correctly
+- Without restricted-message access (see "Encrypted RCS Conversations Missing Messages on Android 17"), the sent message may also not appear in Connected
+
+### Technical details
+
+Stock Android 17 offers every message sent by an app other than the default messaging app to the default app, which
+may deliver it over RCS instead of SMS or MMS. Google Messages accepts when all recipients have RCS, and it alone
+chooses which conversation the message goes to. A request from the desktop carries only the recipients' numbers,
+never a conversation, and neither KDE Connect nor Connected can decline the conversion or steer it. For a group with
+several matching RCS chats, Google Messages created a new one rather than using the active one. Every KDE Connect
+desktop client is affected, not only Connected.
+
+### Workaround
+
+Reply to RCS group conversations from the phone. If a desktop reply has already created a second group chat, later
+desktop replies will continue to land there.
+
+
 ## Non-Media Attachments Are Invisible in Threads
 
 An MMS whose attachment is a PDF, document or other non-media file renders as an empty bubble. The file itself is sent and delivered correctly. This is a KDE Connect Android limitation, not an applet bug.
@@ -63,7 +93,7 @@ An MMS whose attachment is a PDF, document or other non-media file renders as an
 
 ### Technical details
 
-This limitation exists in the KDE Connect Android app which only supports audio, text, image and video images. This affects every KDE Connect desktop client, not only Connected
+KDE Connect Android only reads audio, image, video and text attachments, so other files never reach the desktop as attachments. This affects every KDE Connect desktop client, not only Connected.
 
 ## Attachment-Only MMS May Render Without Its Attachment
 
