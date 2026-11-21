@@ -24,9 +24,9 @@ fn main() -> cosmic::iced::Result {
     use tracing_subscriber::{fmt, EnvFilter};
 
     let default_directive = if cfg!(debug_assertions) {
-        "cosmic_ext_connected=debug"
+        "error,cosmic_ext_connected=debug"
     } else {
-        "cosmic_ext_connected=warn"
+        "error,cosmic_ext_connected=warn"
     };
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_directive));
