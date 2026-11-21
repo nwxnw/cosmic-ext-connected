@@ -51,7 +51,8 @@ just uninstall                           # Uninstall
 
 **Flatpak build:**
 ```bash
-flatpak-builder --user --install --force-clean build-dir io.github.nwxnw.cosmic-ext-connected.json
+./build-flatpak.sh                       # vendors crates, writes the transient .cargo/config.toml, builds the .flatpak bundle
+flatpak install --user --bundle cosmic-ext-connected_<version>.flatpak
 killall cosmic-panel                     # Reload panel
 ```
 
@@ -61,6 +62,7 @@ killall cosmic-panel                     # Reload panel
 - `--filesystem=xdg-config/cosmic:rw` - read/write COSMIC config (file-based; `dbus-config` is not compiled in, so `com.system76.CosmicSettingsDaemon` is not needed)
 - `--filesystem=xdg-data/kpeoplevcard:ro` — read contacts for SMS name resolution
 - `--filesystem=xdg-cache/kdeconnect.daemon:ro` — read MMS attachment cache (daemon uses Qt app name `"kdeconnect.daemon"` → cache at `~/.cache/kdeconnect.daemon/`)
+- `--socket=wayland`, `--share=ipc`, `--device=dri` - standard GUI access
 
 **Debug logs:** `journalctl --user SYSLOG_IDENTIFIER=cosmic-ext-connected -f` (logs land here directly via `tracing_journald`; see `docs/LOGGING.md` for routing details)
 
@@ -72,18 +74,18 @@ cosmic-ext-connected/
 │   ├── main.rs              # Entry point
 │   ├── app.rs               # Core: ConnectApplet, Message enum, update()
 │   ├── config.rs            # User preferences (cosmic_config)
-│   ├── constants.rs         # Timeouts, page sizes, sentinel values
+│   ├── constants.rs         # Timeouts, page sizes, size limits, popup geometry
 │   ├── i18n.rs              # Fluent localization boilerplate
 │   ├── notifications.rs     # Cross-process notification deduplication
-│   ├── subscriptions.rs     # D-Bus signal subscriptions
+│   ├── subscriptions.rs     # Main daemon signal subscription (devices + SMS/call/file notifications), per-thread message subscription
 │   ├── device/              # mod / fetch / class / actions
 │   ├── media/               # mod / fetch / views
 │   ├── sms/
 │   │   ├── conversation_subscription.rs  # List-loading state machine + cached emit
-│   │   ├── fetch.rs                      # Conversation fetching
+│   │   ├── fetch.rs                      # requestConversation range requests, attachment fetch
 │   │   ├── logical.rs                    # LogicalConversation: reaction-bucket merging
 │   │   ├── send.rs                       # sendSms (replies) / sendWithoutConversation
-│   │   ├── store.rs                      # SmsConversationStore (cache + merge state)
+│   │   ├── store.rs                      # SmsConversationStore: cache, merge state, page settle, send status
 │   │   └── views.rs                      # Conversation list and thread views
 │   ├── ui/                  # Device list / device page / shared widgets
 │   └── views/               # Settings, Send-To, view helpers
@@ -91,9 +93,12 @@ cosmic-ext-connected/
 ├── data/
 │   ├── io.github.nwxnw.cosmic-ext-connected.desktop
 │   ├── io.github.nwxnw.cosmic-ext-connected.metainfo.xml
+│   ├── io.github.nwxnw.cosmic-ext-connected.sh               # Flatpak launcher (links the sandbox COSMIC config dir to the host's)
 │   └── icons/hicolor/scalable/apps/
 │       ├── io.github.nwxnw.cosmic-ext-connected.svg                          # App icon (128x128, #BEBEBE fill)
 │       ├── io.github.nwxnw.cosmic-ext-connected-symbolic.svg                  # Panel: connected state
+│       ├── io.github.nwxnw.cosmic-ext-connected-merged-symbolic.svg           # SMS merge toggle: merged
+│       ├── io.github.nwxnw.cosmic-ext-connected-split-symbolic.svg            # SMS merge toggle: split
 │       └── io.github.nwxnw.cosmic-ext-connected-disconnected-symbolic.svg     # Panel: disconnected state
 │
 ├── io.github.nwxnw.cosmic-ext-connected.json  # Flatpak manifest
@@ -121,7 +126,7 @@ cosmic-ext-connected/
 All user-visible text must use `fl!()` macro:
 ```rust
 text(fl!("devices"))
-text(fl!("battery-level", level = battery_percent))
+text::body(fl!("send-to", device = device_label.as_str()))
 ```
 
 ### D-Bus Property Naming
@@ -135,19 +140,19 @@ fn is_charging(&self) -> zbus::Result<bool>;
 - `Message` enum stays in `app.rs` - all modules import from app
 - `ConnectApplet` struct stays in `app.rs` - centralized state
 - View functions take params structs, return `Element<Message>`
-- Async functions are standalone, return `Message` variants
+- Async functions are standalone and return a `Message`, or a `Result` the `Task::perform` call site wraps
 
 ### Icons
 - **Panel icons** use `fill="currentColor"` (symbolic) so COSMIC themes them automatically
 - **App icon** uses hardcoded `fill="#BEBEBE"` because COSMIC Settings does not theme non-symbolic app icons
 - **All icon filenames are prefixed with the app ID** (`io.github.nwxnw.cosmic-ext-connected*`) so Flatpak exports them to the host. Icons without the app-ID prefix are silently excluded from Flatpak export (non-allowed export filename), breaking icon rendering in COSMIC Settings for Flatpak installs.
-- Device icon everywhere is `"io.github.nwxnw.cosmic-ext-connected-symbolic"` (our custom mobile phone icon)
+- Device icons come from `DeviceClass::icon_name()`: phones and unknown peers use `io.github.nwxnw.cosmic-ext-connected-symbolic`, other classes `tablet-symbolic` / `computer-symbolic` / `tv-symbolic`
 - Panel connected state: `"io.github.nwxnw.cosmic-ext-connected-symbolic"`, disconnected: `"io.github.nwxnw.cosmic-ext-connected-disconnected-symbolic"`
 - Disconnected icon follows Pop convention: main element at `opacity="0.35"`, X indicator at full opacity
 
 ### UI Theming
 - Back navigation buttons use `cosmic::theme::Button::Link` (accent-colored icon and text, no background)
-- Headings adjacent to back buttons use `cosmic::theme::Text::Accent`
+- Headings adjacent to back buttons are plain `text::heading` / `text::title4`
 - To accent-color an icon widget, convert `Named` to `Icon` first, then apply `Svg::custom`:
   ```rust
   icon::from_name("icon-name").size(48).icon()
@@ -179,7 +184,7 @@ it has cost real time. Mechanism lives in `docs/SMS.md` / `docs/DBUS.md` / `docs
   process time (`docs/LOGGING.md`).
 - **Never send a `requestConversation` offset > 0.** An out-of-range `start` segfaults
   kdeconnectd 23.08.5 and silently returns nothing on newer daemons. Pin `start = 0` and widen
-  the range end; clamping against a known count is circular (`docs/DBUS.md`).
+  the range end; clamping against a known count is circular (`docs/DBUS.md`, `docs/SMS.md`).
 - **Name the thing that clears any new state field.** A subscription may not clear a flag it did
   not set; it terminates itself with `Done`. Every instance of this bug so far has been the same
   shape — one field with two owners, typically a view-lifecycle flag written by an error path.
@@ -192,7 +197,7 @@ it has cost real time. Mechanism lives in `docs/SMS.md` / `docs/DBUS.md` / `docs
 
 ## Detailed Documentation
 
-Implementation details live under `docs/`. Read the relevant file before working in that area — most cross-cutting pitfalls (the two `requestConversation` methods, `conversationLoaded` unreliability, subscription phase machines, echo-based send status, MMS cache path, COSMIC notification daemon's `expire_timeout` quirk, etc.) are documented there, not in this file.
+Implementation details live under `docs/`. Read the relevant file before working in that area - most cross-cutting pitfalls (the two `requestConversation` methods, `conversationLoaded` unreliability, the store-owned first-page settle, echo-based send status, MMS cache path, COSMIC notification daemon's `expire_timeout` quirk, etc.) are documented there, not in this file.
 
 - **[docs/DBUS.md](docs/DBUS.md)** — D-Bus interface reference, testing commands, signal subscription, surface-level pitfalls
 - **[docs/SMS.md](docs/SMS.md)** — Conversation list and thread loading, reaction-bucket merging, sending and the echo-based send status, MMS attachment cache

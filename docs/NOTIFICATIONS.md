@@ -12,8 +12,7 @@ Shows desktop notifications when new SMS messages are received.
 
 2. **Message Filtering**: Only incoming messages notified (MessageType::Inbox)
 
-3. **Deduplication**: a cross-process file lock (the same message within 2 s), a 30 s freshness check, and `last_seen_sms` per device and thread, set when a thread is opened and after a notification is shown, so the messages a thread re-sends on open or Load older do not notify again in the process that opened the thread or showed the notification
-
+3. **Deduplication**, in this order: a cross-process file lock in the subscription (the same message within 2 s); then in `update()` a 30 s freshness check and `last_seen_sms` per device and thread. `last_seen_sms` is seeded with the current time for the opened conversation's primary thread when it opens, and set to the message date when this process decides to notify, so the messages a thread re-sends on open or Load older do not notify again in that process. Another applet process has no entry for the thread: when a thread is opened within 30 s of a message arriving, the re-sent signal can notify once more from that process. This duplicate is accepted.
 
 4. **Contact Resolution**: Sender names resolved via `ContactLookup` using synced vCards
 
@@ -30,6 +29,7 @@ notify_rust::Notification::new()
     .body(&body)        // Message content or "Message received"
     .icon("phone-symbolic")
     .appname("Connected")
+    .timeout(notify_rust::Timeout::Milliseconds(NORMAL_NOTIFICATION_TIMEOUT_MS))
     .show()
 ```
 
@@ -62,7 +62,8 @@ notify_rust::Notification::new()
     .body(&device_name) // Which device received the call
     .icon("call-start-symbolic")  // or "call-missed-symbolic"
     .appname("Connected")
-    .urgency(notify_rust::Urgency::Critical)
+    .urgency(urgency)  // Critical for "callReceived", Normal for "missedCall"
+    .timeout(notify_rust::Timeout::Milliseconds(timeout_ms))  // CALL_RING_TIMEOUT_MS or NORMAL_NOTIFICATION_TIMEOUT_MS
     .show()
 ```
 
@@ -122,13 +123,13 @@ COSMIC spawns multiple applet processes. Each independently receives D-Bus signa
 
 ### Solution: File-Based Locking
 
-Each notification type uses a dedicated file under `$XDG_RUNTIME_DIR` with POSIX file locking:
+Each notification type uses a dedicated file under `$XDG_RUNTIME_DIR` with `flock(2)` advisory locking:
 
 | Type | Dedup file | Key format |
 |------|-----------|------------|
-| File | `/$XDG_RUNTIME_DIR/cosmic-connected-file-dedup` | `{file_url}` |
-| SMS | `/$XDG_RUNTIME_DIR/cosmic-connected-sms-dedup` | `{thread_id}:{message_date}` |
-| Call | `/$XDG_RUNTIME_DIR/cosmic-connected-call-dedup` | `{event}:{phone_number}` |
+| File | `$XDG_RUNTIME_DIR/cosmic-connected-file-dedup` | `{file_url}` |
+| SMS | `$XDG_RUNTIME_DIR/cosmic-connected-sms-dedup` | `{thread_id}:{message_date}` |
+| Call | `$XDG_RUNTIME_DIR/cosmic-connected-call-dedup` | `{event}:{phone_number}` |
 
 The directory is resolved once per process (`DEDUP_DIR` in `notifications.rs`). `$XDG_RUNTIME_DIR` is user-private (mode 0700, tmpfs) and is the right place for per-session coordination files; `/tmp`, the location before 0.9.0, is world-writable with predictable names. When the variable is unset or empty the files fall back to `std::env::temp_dir()`, which is `/tmp` unless `TMPDIR` says otherwise, so a session without a runtime dir keeps the old behaviour.
 

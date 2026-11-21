@@ -39,7 +39,7 @@ On Android 17, an MMS sent from the desktop (any group message, or any message w
 
 ### Symptoms
 - The recipients receive the message
-- The message does not appear in the conversation, and the note under the reply box changes from "Sending..." to "Not confirmed by your phone" after a minute. The note is gone once you leave the conversation.
+- The message does not appear in the conversation, and the note under the reply box changes from "Sending..." to "Not confirmed by your phone", followed by the start of the message, after a minute. The note is gone once you leave the conversation.
 - The phone's messaging app shows the send as "Not sent", often twice, or does not show it at all
 - One-to-one text messages from the desktop confirm normally
 
@@ -116,16 +116,14 @@ When a photo is sent or received with text, Connected may show the photo but not
 
 Captured 2026-10-18 against kdeconnectd 23.08.5 with Google Messages on a Galaxy S24.
 
-Captured 2026-10-14 against kdeconnect 23.08.5 with Google Messages on a Galaxy S24+.
-
 ## Popup Does Not Reopen After a Double-Click in the File Chooser
 
-Choosing an attachment opens the system file chooser, which takes focus and closes the applet popup. Connected reopens the popup when the chooser returns, chosen or cancelled, except when the file was chosen by double-click.
+Choosing an attachment, or a file for Share File, opens the system file chooser, which takes focus and closes the applet popup. Connected reopens the popup when the chooser returns, chosen or cancelled, except when the file was chosen by double-click.
 
 ### Symptoms
 - Double-click a file: the dialog closes and the popup stays closed
 - Open, Enter or Escape: the popup reopens
-- Nothing is lost: the file is staged and shows as a chip once the popup is open
+- Nothing is lost: an attachment is staged and shows as a chip once the popup is open, and a shared file is still sent
 
 ### Technical details
 

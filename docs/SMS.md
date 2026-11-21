@@ -14,8 +14,7 @@ into a `LogicalConversation` before anything renders. Most list, pagination and 
 therefore operates on a *set* of threadIds rather than one, which is the assumption most worth
 checking before changing anything here.
 
-The daemon offers no reliable "done" event, so both subscriptions derive settlement locally: the
-list on a quiet window with one cold-start retry, threads on a full page received.
+The daemon offers no reliable "done" event, so both subscriptions derive settlement locally: the list on a quiet window with one cold-start retry, threads on a full page of new messages or a `conversationLoaded` once the thread has served anything.
 
 ## Architecture Overview
 
@@ -25,7 +24,7 @@ list on a quiet window with one cold-start retry, threads on a full page receive
 by `addMessages()` on the phone-response path, and it dies with the daemon process. There is no
 persistent store anywhere in KDE Connect's SMS plugin - no sqlite, no `QSettings`, no `KConfig`.
 
-Three consequences the rest of this document depends on:
+Five consequences the rest of this document depends on:
 
 - **A restarted daemon starts empty**, however long the phone has been paired. "Cold cache" is not
   an edge case; it is every first SMS open after a daemon restart or a login.
@@ -51,7 +50,7 @@ Conversation-list loading is cache-first and long-lived:
 
 1. Opening the SMS view starts `conversation_list_subscription`.
 2. The subscription installs D-Bus match rules before firing bootstrap requests.
-3. Bootstrap requests fire immediately, before anything is emitted, so the phone round trip is in flight as early as possible.
+3. The bootstrap request (`requestAllConversationThreads`) fires immediately, before anything is emitted, so the phone round trip is in flight as early as possible.
 4. Cached conversations from `activeConversations()` are emitted as one batch; later data arrives as `conversationCreated` / `conversationUpdated` signals and merges into the list.
 5. A quiet window or bootstrap deadline dismisses the sync indicator.
 6. The subscription remains alive while the SMS view is open.
@@ -60,8 +59,8 @@ Important details:
 
 - Warm starts use cached rows immediately and a shorter bootstrap window.
 - Cold starts use a longer wait and one bounded retry.
-- The conversation-list subscription reads the daemon cache exactly once, before its bootstrap requests fire. Everything after that arrives as signals, and there is no follow-up poll — a missed signal is not backfilled by a later cache read.
-- An empty list after the cold-start deadline and retry shows the empty state. A device that advertises SMS but hold no threads (a tablet without service) answers the bootstrap with nothing at all, so this is the only way it can complete; the subscription keeps listening and a late phone's conversations replace it.
+- The conversation-list subscription reads the daemon cache exactly once, before its bootstrap request fires. Everything after that arrives as signals, and there is no follow-up poll - a missed signal is not backfilled by a later cache read.
+- An empty list after the cold-start deadline and retry shows the empty state. A device that advertises SMS but holds no threads (a tablet without service) answers the bootstrap with nothing at all, so this is the only way it can complete; the subscription keeps listening and a late phone's conversations replace it.
 
 ### Message Thread Loading
 
@@ -96,7 +95,7 @@ iOS reactions over SMS arrive on slightly different address-sets and AOSP bucket
 Merging precondition — the grouping key in `merge_into_logical` (`sms/logical.rs`) is `(canonical address-set, conversation-level sub_id)`:
 
 - both `sub_id`s are non-`-1` and equal, AND
-- canonical address-sets are equal (digit-only normalize, leading-`1` stripped, deduplicated as a set).
+- canonical address-sets are equal (digit-only normalize, a leading US `1` dropped when more than 10 digits remain, deduplicated as a set).
 
 Each `LogicalConversation` carries:
 
@@ -118,8 +117,7 @@ back to the conversation's own address list. The deduplication also prevents the
 the old symmetric-merge redirect existed to avoid.
 
 With merging off (see "Per-entry markers and SMS-view toggle" below), a reply from the non-canonical sibling of a reaction-
-bucket pair is still filed on the canonical thread, so its echo lands outside the open thread and the "Sending..." indicator
-can stay pinned. This is documented behavior gated behind the user opt-out, not a regression.
+bucket pair is still filed on the canonical thread, so its echo lands outside the open thread, so the caption under the compose box changes to "Not confirmed by your phone" after `SEND_ECHO_WINDOW_SECS` although the message was sent. This is documented behavior gated behind the user opt-out, not a regression.
 
 ### Per-entry markers and SMS-view toggle
 
@@ -136,9 +134,9 @@ The merge-off path uses the same grouping key as the merge-on path, so any pair 
 
 Older messages are loaded when the user presses Load older at the top of the thread, and are prepended as they arrive. The row shows only once the initial load has completed and more history exists, the same condition `request_older_page` checks. The thread is anchored to the bottom, so a prepend does not move the view. There is no scroll-to-top prefetch: an `on_scroll` handler publishes a message on every redraw whose bounds change, and that panics tiny_skia when a newly created popup is redrawn before its first configure ([pop-os/libcosmic#1491](https://github.com/pop-os/libcosmic/issues/1491)). Restore it once the upstream fix reaches the lock rev.
 
-A thread's page settles on a full page of new messages, or on the first `conversationLoaded` for the thread after its cache burst. That signal is the last the daemon sends for the page: either its cache filled the request, or it fetched from the phone and emitted what arrived. More history exists if the cache filled the request (`served >= requested`) or the count grew past the last one seen (`last_count`). The count itself is never compared with the loaded count: the daemon keys its cache by date, so messages sent in the same second overwrite each other, and the count includes messages it can no longer serve. A `conversationLoaded` that arrives before the burst belongs to another request and is ignored. Because the range starts at 0, the daemon re-serves the messages already shown before the older ones; those duplicates count toward position in the range (`served`), not toward progress (`new`), so a page cannot settle full-page on them.
+A thread's page settles on a full page of new messages, or on the first `conversationLoaded` for the thread after its cache burst. That signal is the last the daemon sends for the page: either its cache filled the request, or it fetched from the phone and emitted what arrived. More history exists if the cache filled the request (`served >= requested`) or the count grew past the last one seen (`last_count`). Within a page the count is never compared with the loaded count: the daemon keys its cache by date, so messages sent in the same second overwrite each other, and the count includes messages it can no longer serve. A `conversationLoaded` that arrives before the burst belongs to another request and is ignored. Because the range starts at 0, the daemon re-serves the messages already shown before the older ones; those duplicates count toward position in the range (`served`), not toward progress (`new`), so a page cannot settle full-page on them.
 
-Outside a page, a `conversationLoaded` never raises a thread's `has_more`. A grown count there is usually a new incoming message, not older history, and raising it would hide messages again behind a thread that is already at its top.
+Outside a page, a `conversationLoaded` never raises a thread's `has_more`: a grown count there is usually a new incoming message, not older history, and raising it would hide messages again behind a thread that is already at its top. It can lower it: the arm compares the thread's loaded count with the signal's count (or, for a count of 0, with a page) and clears `has_more` when nothing is left to load. This is the only place the count is compared with what loaded.
 
 For merged conversations, the fetch fans out: one request per threadId in `current_merged_thread_ids` that still has more to give (`thread_has_more`), each carrying its own already-loaded count. Each thread settles on its own counters, and the page is held open until every targeted thread has settled (`OlderPageLoad.pending`). `messages_has_more` is the OR across `thread_has_more`, so the thread stops paginating only when every merged thread is exhausted.
 
@@ -162,9 +160,7 @@ counters exist — one for the conversation list, one shared by the per-thread m
 — bumped independently, each behind its own view-lifecycle flag. Nothing can command a running
 subscription; this is the only way to restart one.
 
-The message bump also resets the thread's load bookkeeping (`messages`, `known_message_ids`,
-`thread_has_more`, `older_page`, `messages_has_more`, `initial_load_complete`), mirroring
-`OpenConversation`. Without it the re-streamed page dedups against stale uids and `messages`
+The message bump also resets the thread's load bookkeeping (`reset_thread_state` in `store.rs`: `messages`, `known_message_ids`, `thread_has_more`, `first_page`, `last_count`, `older_page`, `messages_has_more`, `initial_load_complete`), mirroring `OpenConversation`. Without it the re-streamed page dedups against stale uids and `messages`
 becomes the union of pre- and post-restart data — so a recovered thread is a fresh first page, not
 a merge. It sets the same loading state the open does, so the view shows the loading text, not
 "No messages", until the page returns.
@@ -180,14 +176,13 @@ back inside one refresh window. Nothing re-activates the daemon on loss; the nex
 Replies call `sendSms(addresses, message, attachments, subID)` on the SMS plugin (`/devices/{id}/sms`), with recipients 
 Connected selects (`reply_recipients`, see "Recipient rule" above) and the reference message's `subID`. Connected does 
 not use `replyToConversation`: it resolves recipients from the oldest message in the daemon's in-memory cache, which was 
-the wrong set for 20 of 100 recent threads (D.63), and on a pre-`26.08.0` daemon it needs that cache primed. If no message
+the wrong set for 20 of 100 recent threads, and on a pre-`26.08.0` daemon it needs that cache primed. If no message
 or conversation address is available, Connected shows a status and sends nothing. Android strips the user's own number
-from MMS rows, so in a conversation with yourself an MMS carries no address and the recipient comes from the newest
-SMS row on the page.
+from MMS rows, so in a conversation with yourself an MMS carries no address and the recipient comes from the newest loaded message that carries an address, an SMS row.
 
-On `Ok` the draft and staged attachment clear, and a caption under the compose box reads "Sending..." until the phone's sent copy arrives on the thread's long-lived message subscription. Nothing is added to the thread locally: the echo is the only copy of a sent message, so the thread shows only what the daemon reports. Send is disabled only while the D-Bus call is in flight, so an unechoed MMS does not block the next send.
+A caption under the compose box reads "Sending..." from the moment the call is dispatched until the phone's sent copy arrives on the thread's message subscription; on `Ok` the draft and staged attachment clear. Nothing is added to the thread locally: the echo is the only copy of a sent message, so the thread shows only what the daemon reports. Send is disabled only while the D-Bus call is in flight, so an unechoed MMS does not block the next send.
 
-The echo is matched by type `Sent`, a body equal to the pending reply's, and being the newest message in the thread. The last test stops an older sent message with the same body, arriving from Load older or the initial load, from matching; every date in the thread is the phone's, so it has no clock skew, and a miss leaves the reply unconfirmed rather than wrongly confirmed. The match is scoped to the open merged set, so an echo on a sibling thread in `merged_thread_ids` still clears it. Because the phone files a reply by its recipient set, the echo lands on the canonical thread, which is in `merged_thread_ids` whenever merging is on.
+The echo is matched by type `Sent`, a body equal to the pending reply's, and being the newest message in the thread. The last test stops an older sent message with the same body, arriving from Load older or the initial load, from matching; every date in the thread is the phone's, so it has no clock skew, and a miss leaves the reply unconfirmed rather than wrongly confirmed. The match is scoped to the open merged set, so an echo on a sibling thread in `merged_thread_ids` still clears it. Because the phone files a reply by its recipient set, the echo lands on the canonical thread, which is in `merged_thread_ids` whenever merging is on. `Sent` is any type other than inbox (1), so an outbox, failed or queued row with the same body also matches.
 
 If no echo arrives within `SEND_ECHO_WINDOW_SECS` (60 s), the caption changes to "Not confirmed by your phone", with an excerpt of the body when there is one. The clock only relabels: it never reports success or failure, and a late echo still clears it. The send state (`ReplySend` in `store.rs`) lives with the composer, so leaving the thread clears it. `SmsSendResult` carries the `(device_id, thread_id)` it was sent from, and a result for a thread that is no longer open changes no state, though a failure is still reported.
 
@@ -201,15 +196,15 @@ Both compose surfaces stage one file for the next send, passed through the `atta
 
 **The wire value is a plain absolute path**, not a `file://` URL and not base64, despite the name. The daemon opens it with `QFile`, base64-encodes the contents into the packet and sniffs the MIME type itself (`smsplugin.cpp`). Under Flatpak the chooser portal returns a path under the document portal mount, which the daemon reads on the host as the same user, so no `finish-args` entry is needed.
 
-**The daemon validates nothing.** A path it cannot open becomes an empty attachment that is still dispatched, and the phone drops the whole message, text included, with no error anywhere. Every guard is ours: `stage_attachment` in `store.rs` stats the file at pick time, and `attachment_value` in `send.rs` stats it again before each send because the file can vanish in between. A failed check refuses the send rather than degrading to text-only; the compose text and chip survive for a retry.
+**The daemon validates nothing.** A path it cannot open becomes an empty attachment that is still dispatched, and the phone drops the whole message, text included, with no error anywhere. Every guard is ours: `stage_attachment` in `store.rs` rejects a path that is not UTF-8 (the daemon takes D-Bus strings) and stats the file at pick time, and `attachment_value` in `send.rs` stats it again before each send because the file can vanish in between. A failed check refuses the send rather than degrading to text-only; the compose text and chip survive for a retry.
 
-**Size is a hard limit.** When the staged file plus the compose text is over `MMS_MAX_BYTES` (800,000 bytes), Send is disabled in both views, the update arms refuse it as well because Enter bypasses the button, and the chip carries a warning glyph and tooltip. The figure sits above KDE Connect SMS app cap of 600 KB and below the 1 MB caps carriers commonly enforce. 
+**Size is a hard limit.** When the staged file plus the compose text is over `MMS_MAX_BYTES` (800,000 bytes), Send is disabled in both views, the update arms refuse it as well because Enter bypasses the button, and the chip carries a warning glyph and tooltip. The figure sits above KDE Connect's own cap of 600 KB and below the 1 MB caps carriers commonly enforce.
 
 Each compose surface owns its own staged file, `pending_attachment` for the thread view and `new_message_pending_attachment` for New message, cleared wherever its sibling compose state is cleared. A shared field let a file staged in one surface be sent from the other with no chip in sight.
 
 No local preview is built. The phone's echo is the only copy of a sent attachment, and it renders through the received-message path.
 
-The chooser is a portal round trip: the dialog takes focus and the panel tears the popup down, and the `SmsAttachmentSelected` and `NewMessageAttachmentSelected` arms in `app.rs` reopen it on every return path, cancel included, unless the panel left it standing. The double-click gap is in `docs/KNOWN_ISSUES.md`.
+The chooser is a portal round trip: the dialog takes focus and the panel tears the popup down, and the `SmsAttachmentSelected` and `NewMessageAttachmentSelected` arms in `app.rs` reopen it on every return path, cancel included, unless the panel left it standing. The double-click gap is in `docs/KNOWN_ISSUES.md`. A thread-view pick carries the device and thread that opened the chooser and is dropped if that thread is no longer open when it returns.
 
 Send outcome is unknowable for attachments as for text (see "A send is confirmed only by its echo" below); the phone side has two literal `// TODO: Notify other end` in `SmsMmsUtils.kt`. Copy may say "sent" in the hand-off sense, never "delivered".
 
@@ -245,7 +240,7 @@ The KDE Connect daemon sets its Qt application name to `"kdeconnect.daemon"` in 
 ## Known Constraints
 
 - `conversationLoaded` reports `m_known_messages[id].size()` - the count of distinct message UIDs the daemon currently holds **in memory** for that thread - not the phone's authoritative total. It is emitted only from `addMessages()`, so it fires only when the phone has delivered a batch, never on a purely cached read.
-- Notification correctness depends on careful `last_seen_sms` handling when opening threads and merging incoming data.
+- Notification deduplication within a process depends on `last_seen_sms`, written only when a thread is opened (the open thread stamped with the current time) and after a notification passes the dedup checks; the conversation list never writes it. See `docs/NOTIFICATIONS.md`.
 - **A send is confirmed only by its echo.** `Ok` from `sendSms` / `sendWithoutConversation` means the D-Bus call worked, nothing more (`docs/DBUS.md` → "A void method's `Ok`"). The phone's sent copy is the only evidence, and it means the phone recorded the message as sent, not that it was delivered. A reply with no echo ends at "Not confirmed by your phone", which means unknown, not failed. The conversation list is not updated optimistically. The row changes when the phone's echo arrives on the live list subscription.
 - **History: a pre-`26.08.0` daemon silently discards a `replyToConversation` when the thread is not in its cache.** Connected no longer calls `replyToConversation` (see "Replies"), so this no longer affects it; kept for anyone driving the daemon directly. Upstream BUG 517659, fixed in `3bf16922` and first shipped in `v26.08.0`: `replyToConversation()` logged a warning and dropped the message outright when `m_conversations` did not hold the target thread, which is the state after a device reconnect, or before the list has loaded for the session. **This is the daemon's behaviour, not applet logic**. 
 - **An attachment-only MMS can echo back without its attachment.** A text-less send sometimes come back with `eventField 0` and an empty attachment list, so the bubble renders as a bare timestamp. No pattern found; upstream. See `docs/KNOWN_ISSUES.md`.
@@ -260,6 +255,8 @@ Messages (see `app.rs`):
 - `ConversationSyncStarted` / `ConversationSyncComplete` — spinner lifecycle for the list
 - `ConversationMessageReceived` — individual message during thread load or live updates
 - `ConversationLoaded` - a `conversationLoaded` signal for an open thread: the daemon's known count, an upper bound on what its cache serves
+- `ConversationsBatchReceived` - the cached list from `activeConversations()` in one batch
+- `ConversationRangeRequested` - ack that a first-page re-read or Load older range request was fired (`ok`) or failed
 
 Timeout constants (see `constants.rs`):
 
@@ -268,6 +265,7 @@ Timeout constants (see `constants.rs`):
 - `CONVERSATION_LIST_QUIET_MS` — quiet-window settle after bootstrap activity
 - `CONVERSATION_LIST_RETRY_THRESHOLD` / `CONVERSATION_LIST_RETRY_WAIT_MS` — cold-start retry gate and window
 - `NEW_MESSAGE_SYNC_INDICATOR_SECS` — post-send window the conversation-list sync indicator stays up while waiting for the phone to report the new conversation
+- `SEND_ECHO_WINDOW_SECS` - how long the reply caption reads "Sending..." before "Not confirmed by your phone"
 
 D-Bus surface:
 

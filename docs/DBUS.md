@@ -15,8 +15,9 @@ KDE Connect D-Bus interfaces and testing commands.
 | `org.kde.kdeconnect.device.ping` | (same + /ping) | Send ping to device |
 | `org.kde.kdeconnect.device.notifications` | (same + /notifications) | List active notifications |
 | `org.kde.kdeconnect.device.share` | (same + /share) | File/URL sharing |
-| `org.kde.kdeconnect.device.sms` | (same + /sms) | Request SMS conversations |
-| `org.kde.kdeconnect.device.conversations` | `/modules/kdeconnect/devices/<id>` | SMS data and signals |
+| `org.kde.kdeconnect.device.sms` | (same + /sms) | Send SMS/MMS (`sendSms`), fetch MMS attachments (`getAttachment`) |
+| `org.kde.kdeconnect.device.conversations` | `/modules/kdeconnect/devices/<id>` | Conversation list and thread requests, `sendWithoutConversation`, `conversationCreated`/`Updated`/`Loaded` signals |
+| `org.kde.kdeconnect.device.notifications.notification` | (same + /notifications/<id>) | One phone notification: properties, `dismiss`, `sendReply` |
 | `org.kde.kdeconnect.device.telephony` | (same + /telephony) | Call notifications |
 
 ## Property Naming Convention
@@ -119,11 +120,14 @@ dbus-send --session --print-reply \
 ### Monitoring Signals
 
 ```bash
-# Watch all KDE Connect signals
-dbus-monitor --session "sender='org.kde.kdeconnect'"
+# Watch everything (the authority on signal order; filter afterwards)
+dbus-monitor --session
 
-# Watch specific device signals
-dbus-monitor --session "path='/modules/kdeconnect/devices/<device-id>'"
+# Watch one interface
+dbus-monitor --session "interface='org.kde.kdeconnect.device.conversations'"
+
+# Watch one device and its plugins
+dbus-monitor --session "path_namespace='/modules/kdeconnect/devices/<device-id>'"
 ```
 
 ### Using busctl
@@ -151,7 +155,7 @@ The daemon exposes `requestConversation` on two interfaces with **different beha
 - **`org.kde.kdeconnect.device.sms`** (at `/devices/{id}/sms`): Sends a network packet to the phone. The response flows through `addMessages()` which populates the daemon's in-memory `m_conversations` cache.
 - **`org.kde.kdeconnect.device.conversations`** (at `/devices/{id}`): Creates a `RequestConversationWorker` that reads `m_conversations` and emits one `conversationUpdated` D-Bus signal per message it can already serve. The worker itself never writes to the cache; it only reads and emits.
 
-Connected calls only the Conversations one. The SMS-plug method is documented because it exists, not because it is used.
+Connected calls only the Conversations one. The SMS-plugin method is documented because it exists, not because it is used.
 
 **There is no persistent store.** `m_conversations` is an in-memory `QMap` on the daemon, populated
 only by `addMessages()` from phone responses, and it dies with the daemon process. Nothing in
@@ -176,10 +180,10 @@ Always pass `start = 0` and vary only `end`. See `docs/SMS.md` → "Older Messag
 
 ### Match rules are not uniformly scoped
 
-- `subscriptions.rs` registers a rule filtered **only on the daemon's sender name**, with no interface or member filter, then accepts or drops each signal in an `is_relevant` match. A new daemon-emitted signal needs **no new match rule** here - only a new branch. Only the daemon's own `PropertiesChanged` reach `is_relevant`; the phone's media players sit on separate connections and are not matched. It also holds a rule for the bus's own `NameOwnerChanged` on `org.kde.kdeconnect`: the bus emits that signal, not the daemon, so the sender rule cannot deliver it. It is handled before `is_relevant`.
-- `sms/conversation_subscription.rs` registers **member-scoped** rules, one per signal (`conversationCreated`, `conversationUpdated`, `conversationLoaded`). A new signal there **does** need its own rule, or it never arrives. 
+- `dbus_signal_subscription` (`subscriptions.rs`) registers a rule filtered **only on the daemon's sender name**, with no interface or member filter, so a new daemon-emitted signal needs **no new match rule** here - only a new branch. It also holds a rule for the bus's own `NameOwnerChanged` on `org.kde.kdeconnect` (the bus emits that signal, not the daemon, so the sender rule cannot deliver it) and an interface rule for `org.kde.kdeconnect.device.share`. Explicit branches handle `shareReceived`, `conversationUpdated` (SMS notifications), `callReceived`, `pairingFailed` and `NameOwnerChanged` first; every other signal is accepted or dropped by the `is_relevant` match, and a match becomes a debounced device refresh. Only the daemon's own `PropertiesChanged` reach `is_relevant`; the phone's media players sit on separate connections and are not matched.
+- `conversation_message_subscription` (`subscriptions.rs`) and `conversation_list_subscription` (`sms/conversation_subscription.rs`) register **member-scoped** rules, one per signal they read: `conversationUpdated` and `conversationLoaded`, plus `conversationCreated` for the list. A new signal there **does** need its own rule, or it never arrives.
 
-Do not carry the conclusion from one file to the other.
+Scope is per subscription, not per file: do not carry the conclusion from one subscription to another.
 
 ### `isReachable` is not "the phone can be reached"
 
@@ -187,7 +191,7 @@ Upstream, `Device::isReachable()` is `!m_deviceLinks.isEmpty()` - a link *object
 
 ### A void method's `Ok` is not an acknowledgement
 
-`replyToConversation` and `sendSms` have **no out parameters** and cannot report delivery, and the daemon's send returns success as soon as the write buffers - which succeeds on a dead-but-ESTABLISHED socket. `Ok` means "the D-Bus call worked". The only evidence a message was delivered is the phone echoing it back.
+`sendSms` and `sendWithoutConversation` have **no out parameters** and cannot report delivery, and the daemon's send returns success as soon as the write buffers - which succeeds on a dead-but-ESTABLISHED socket. `Ok` means "the D-Bus call worked". The only evidence a message was delivered is the phone echoing it back.
 
 ### The daemon's interface name is not its destination
 
@@ -248,6 +252,6 @@ attempt doubles the wait before the user sees anything. The classification reads
 `zbus::Error::MethodError`; `zbus::fdo::Error` is the server-side type and never appears here.
 
 The connection mutex is acquired *inside* each attempt so the guard drops before the backoff
-sleep. Nineteen call sites share that `Arc<Mutex<Connection>>`, and holding it across a backoff
+sleep. Every D-Bus call site outside the subscriptions shares that `Arc<Mutex<Connection>>`, and holding it across a backoff
 would stall all of them during exactly the cold open where the user is most likely to click
 something.

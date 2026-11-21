@@ -31,6 +31,8 @@ Write `status_message` only through `set_status`, `set_transient_status` (clears
 `set_view` (clears on navigation). Each bumps a generation, so a stale timer cannot clear a newer
 status, and a device refresh never touches it.
 
+The only other writers are the generation-checked `ClearStatusMessage` and a store-requested clear (`SmsReply::SetStatus(None)`), which leaves the generation alone. The SMS reply-box send note is not a status message: it is `ReplySend` in `sms/store.rs` and clears when the thread closes.
+
 ## Async Tasks
 
 Use `Task::perform` with `cosmic::Action::App` wrapper:
@@ -38,9 +40,11 @@ Use `Task::perform` with `cosmic::Action::App` wrapper:
 ```rust
 cosmic::app::Task::perform(
     async { /* async work */ },
-    |result| cosmic::Action::App(Message::from(result)),
+    |result| cosmic::Action::App(Message::ShareComplete(result)),
 )
 ```
+
+For an async fn that already returns a `Message`, pass `cosmic::Action::App` directly.
 
 ## Popup Windows
 
@@ -58,39 +62,41 @@ theming problem and is not one.
 ```rust
 use cosmic::surface::action::{app_popup, destroy_popup};
 
-Message::TogglePopup => {
-  let action = if let Some(popup_id) = self.popup.take() {
-      destroy_popup(popup_id)
-  } else {
-      app_popup::<ConnectApplet>(
-          |_| Default::default(),
-          |state: &mut ConnectApplet| {
-              let new_id = window::Id::unique();
-              state.popup = Some(new_id);
-              state.core.applet.get_popup_settings(
-                  state.core.main_window_id().unwrap(),
-                  new_id,
-                  None, None, None,
-              )
-          },
-          None,
-      )
-  };
+fn open_popup_task() -> cosmic::app::Task<Message> {
+    let action = app_popup::<ConnectApplet>(
+        |_| Default::default(),
+        |state: &mut ConnectApplet| {
+            let new_id = window::Id::unique();
+            state.popup = Some(new_id);
+            state.core.applet.get_popup_settings(
+                state.core.main_window_id().unwrap(),
+                new_id,
+                None, None, None,
+            )
+        },
+        None,
+    );
+    cosmic::task::message(cosmic::Action::Surface(action))
+}
 
-  return cosmic::task::message(cosmic::Action::Cosmic(
-      cosmic::app::Action::Surface(action),
-  ));
+Message::TogglePopup => {
+    if let Some(popup_id) = self.popup.take() {
+        return cosmic::task::message(cosmic::Action::Surface(destroy_popup(popup_id)));
+    }
+    return Self::open_popup_task();
 }
 
 Message::PopupClosed(id) => {
-  if self.popup == Some(id) {
-      self.popup = None;
-  }
+    if self.popup == Some(id) {
+        self.popup = None;
+    }
 }
 ```
 
 The settings closure takes `&mut App`, so the popup id is recorded there rather than before the
 call. Passing `None` as the third argument means libcosmic renders through `view_window`.
+
+`open_popup_task()` is the only popup-create path; the file chooser reopen uses it too (see File chooser).
 
 **Do not use manual runtime actions.** Clicking the panel icon to close then leaves the popup
 unable to reopen.
@@ -103,6 +109,9 @@ wrong; it changes positioning, so re-test both panel orientations if adopted.
 
 **Popup height.** The cap is the autosize limit on `popup_container`, which libcosmic sets to 1000 px. `view_window` lowers it with `.max_height(self.popup_max_height())`, using the logical height of the panel's own output from the Wayland output events, minus the panel and a 16 px margin. A `Length::Fixed` wrapper inside the popup clamps to that limit rather than overriding it, which is why the thread view's `Fixed(10_000.0)` ends up exactly at the cap. The height arrives in `OutputEvent::Created` when the applet starts; a resolution or scale change while the panel runs doesn't send `InfoUpdate`, so the old cap holds until the panel restarts.
 
+## File chooser
+
+All pickers go through `pick_file()` in `app.rs`, which opens libcosmic's portal chooser and reads the result with `FileResponse::url().to_file_path()`; a non-file URL or a cancel arrives as `None`. The chooser takes focus and the panel tears the popup down, so every result arm (`FileSelected`, `SmsAttachmentSelected`, `NewMessageAttachmentSelected`) batches `reopen_after_chooser()`, which reopens through `open_popup_task()` on every return, cancel included, unless the panel left the popup standing. The chooser outlives the popup and the view that opened it, so the result message carries its target: `FileSelected` the device id, `SmsAttachmentSelected` the `(device_id, thread_id)`. Never read the target from current view state when the result arrives. The double-click gap is in `docs/KNOWN_ISSUES.md`.
 
 ## View Lifetimes
 
@@ -137,9 +146,7 @@ recipient's. That is why `Message::CloseConversation` snaps the **message thread
 `START` on the way out: the thread is anchored to the bottom, so its offset is measured from the
 newest message and is non-zero whenever the user scrolled up; the top-anchored conversation list
 is about to adopt that state and would read the same number as a distance from its top, and
-targeting the list's own id cannot work. Verify against
-`vendor/iced_core/src/widget/tree.rs` and `vendor/iced_widget/src/scrollable.rs`, **not**
-`~/.cargo` (which holds unrelated revs).
+targeting the list's own id cannot work. Verify against the libcosmic checkout matching `Cargo.lock`'s rev: `~/.cargo/git/checkouts/libcosmic-*/<short-sha>/iced/core/src/widget/tree.rs` and `…/iced/widget/src/scrollable.rs`. Other revs there are unrelated; `vendor/` records no rev and is current only right after `cargo vendor`.
 
 **The message thread scrollable is `anchor_bottom()`.** A fresh widget tree starts at offset 0,
 and under `Anchor::End` that is the newest message, so the thread lands on the newest message
@@ -149,37 +156,24 @@ dependency on when the popup's tree exists. The anchor inverts the offset frame 
 from the bottom (use `absolute_offset_reversed()` for distance from the top), and content
 prepended at the top does not move the view, so older-page loads need no position fix-up.
 
+**No `on_scroll` on a scrollable in the popup.** A handler publishes a message whenever the scrollable's bounds change, and a publish while a newly created popup is redrawn before its first configure panics tiny_skia ([pop-os/libcosmic#1491](https://github.com/pop-os/libcosmic/issues/1491)). The message thread therefore loads older pages only from its Load older row (`docs/SMS.md`). Restore scroll-triggered loading once the upstream fix reaches the lock rev.
+
 ## Clickable List Item Pattern
 
 Actions use clickable list item style:
 
 ```rust
-// Navigation items (with chevron)
+let sp = cosmic::theme::spacing();
 let row = row![
     icon::from_name("icon-name").size(24),
-    text(fl!("label")).size(14),
-    widget::horizontal_space(),
-    icon::from_name("go-next-symbolic").size(16),  // Chevron
+    text::body(fl!("label")),
+    widget::space::horizontal(),
+    icon::from_name("go-next-symbolic").size(16), // chevron: navigation items only
 ]
-.spacing(12)
+.spacing(sp.space_xs)
 .align_y(Alignment::Center);
 
-// Action items (no chevron)
-let row = row![
-    icon::from_name("icon-name").size(24),
-    text(fl!("label")).size(14),
-    widget::horizontal_space(),
-]
-.spacing(12)
-.align_y(Alignment::Center);
-
-// Button wrapper
-widget::button::custom(
-    widget::container(row).padding(8).width(Length::Fill),
-)
-.class(cosmic::theme::Button::Text)
-.on_press(Message::SomeAction)
-.width(Length::Fill)
+applet::menu_button(row).on_press(Message::SomeAction)
 ```
 
 **When to use chevrons:** Items that navigate to another view (SMS Messages, Media Controls). Omit for immediate actions (Share file, Send Ping, Find Phone).
@@ -187,14 +181,15 @@ widget::button::custom(
 ## Device Page Layout
 
 1. **Header** - Back button, device icon, name, type, status, battery
-2. **Actions** (list items) - the set depends on peer class and reachability:
+2. **Actions** (list items) - suppressed while a pair request is in flight; the set depends on peer class and reachability:
    - *Mobile peer:* SMS Messages → ConversationList (chevron), Send to [device] → SendTo
      (chevron), Media Controls → MediaControls (chevron), Find Phone → rings device (no chevron)
    - *Non-mobile peer:* Share file, Share clipboard, Send Ping, Share Text → ShareText, Media
      Controls → MediaControls (chevron)
    - *Offline:* the action list is replaced by the `device-offline-actions-unavailable` caption
-3. **Pairing section** - Pair/unpair buttons; an offline paired device shows the
-   `unpair-offline-note` caption alongside Unpair
+
+   A paired device always ends with a divider and Unpair, plus the `unpair-offline-note` caption when offline; an unpaired reachable device shows only Pair.
+3. **Pairing section** - only while a pair request is in flight: Accept/Reject for a peer request, or a waiting caption with Cancel for ours. A `pairing-failed` caption follows the actions when the daemon reported one.
 4. **Notifications section** - Device notifications list (`build_notifications_section`), hidden
    entirely when the device reports none
 
@@ -222,9 +217,7 @@ exactly `DbusConnectionFailed` and `DeviceFetchFailed`, and cleared by exactly `
 rather than blinking away on a click that is about to fail again. Adding a third writer or a
 convenience clear re-introduces the failure mode this shape exists to prevent.
 
-**Subscription setup failures must not reach this surface.** A subscription that fails to build
-its connection or proxy emits `Message::SubscriptionRetrying`, which only logs; it re-enters
-`Init` and tries again on its own. Routing those through `Message::Error` blanked the device list
+**Subscription setup failures must not reach this surface.** `dbus_signal_subscription` is the only emitter of `Message::SubscriptionRetrying`: when it fails to build its session connection or bus proxy it emits that message, which only logs, and re-enters `Init`. The SMS subscriptions retry through `with_dbus_retries` and report a final failure as `SmsError`, which shows a transient status and never reaches `self.error`. Routing those through `Message::Error` blanked the device list
 on a transient failure the subscription was already recovering from. `DeviceFetchFailed` is the
 only path that should raise the card, because it is the only one that says something about device
 state.
