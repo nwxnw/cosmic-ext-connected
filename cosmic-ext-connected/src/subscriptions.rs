@@ -433,6 +433,7 @@ enum ConversationMessageState {
         conn: Connection,
         stream: zbus::MessageStream,
         thread_id: i64,
+        device_path: String,
     },
     /// Terminal state after a connect or request failure
     Done,
@@ -616,6 +617,7 @@ pub fn conversation_message_subscription(
                             conn,
                             stream,
                             thread_id,
+                            device_path,
                         },
                     ))
                 }
@@ -623,6 +625,7 @@ pub fn conversation_message_subscription(
                     conn,
                     mut stream,
                     thread_id,
+                    device_path,
                 } => {
                     while let Some(item) = stream.next().await {
                         let msg = match item {
@@ -637,6 +640,10 @@ pub fn conversation_message_subscription(
                             || header.interface().map(|i| i.as_str())
                                 != Some("org.kde.kdeconnect.device.conversations")
                         {
+                            continue;
+                        }
+                        // Thread ids are per phone: drop another device's signals
+                        if header.path().map(|p| p.as_str()) != Some(device_path.as_str()) {
                             continue;
                         }
                         let forward = match header.member().map(|m| m.as_str()) {
@@ -665,6 +672,7 @@ pub fn conversation_message_subscription(
                                     conn,
                                     stream,
                                     thread_id,
+                                    device_path,
                                 },
                             ));
                         }

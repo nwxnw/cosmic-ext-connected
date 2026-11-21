@@ -5,6 +5,7 @@
 - Older messages in a conversation load from the Load older button rather than automatically when you scroll to the top. This avoids a crash when the popup opens on a conversation.
 - Share File returns to the popup after the file chooser closes, as attaching a file to a message already does.
 - A reply appears in the conversation once your phone confirms it was sent. Until then a note under the reply box says it is sending, and changes to "Not confirmed by your phone" if the phone never confirms it.
+- Czech and Polish translations completed, and Swedish updated.
 
 ### Fixed
 - With two Share File choosers open at once, the first file picked is sent to the device you chose it for, not to the device of the later chooser.
@@ -13,6 +14,7 @@
 - Status messages for ping, sharing, pairing, the clipboard and media controls now appear in your language, and error messages no longer repeat their first words.
 - A conversation open while KDE Connect restarts or your phone reconnects now says it is loading while it reloads, instead of briefly showing no messages.
 - An incoming SMS no longer goes without a notification when Connected was last left showing your messages.
+- With two phones connected, an open conversation no longer picks up messages from a conversation on the other phone, so a reply cannot go to the wrong person.
 
 ## [0.9.0] - 2026-10-24
 Photos and files can now be attached to SMS messages, and conversations load, scroll and reply more reliably.
