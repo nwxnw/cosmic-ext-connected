@@ -616,7 +616,7 @@ impl SmsConversationStore {
             return cosmic::app::Task::none();
         }
         tracing::debug!(
-            "Prefetching older messages (floor={:?}, targets={:?})",
+            "Requesting older page (floor={:?}, targets={:?})",
             floor,
             targets
         );
@@ -1276,10 +1276,9 @@ impl SmsConversationStore {
                     .iter()
                     .filter(|m| m.thread_id == thread_id)
                     .count() as u64;
-                // `total_count == 0` on the collected-reply path means "unknown",
-                // not "empty" (daemon quirk) — fall back to the per-thread page
-                // heuristic so a late-arriving 0 can't latch has_more false and
-                // kill the first scroll's prefetch.
+                // A `count` of 0 means "unknown", not "empty" (daemon quirk) - fall
+                // back to the per-thread page heuristic so a late-arriving 0 can't
+                // latch has_more false and hide the Load older row.
                 let has_more_t = if count > 0 {
                     loaded_t < count
                 } else {
@@ -1882,9 +1881,8 @@ impl SmsConversationStore {
     }
 
     /// SMS-state-driven subscriptions: conversation-list refresh and the
-    /// per-thread message subscription. The unconditional SMS/call notification
-    /// subscriptions stay in `app.rs::subscription()` because they're gated on
-    /// device reachability + config, not store state.
+    /// per-thread message subscription. SMS and call notifications are handled
+    /// in the main `dbus_signal_subscription`, not here.
     pub fn subscriptions(&self) -> Vec<Subscription<Message>> {
         let mut subs: Vec<Subscription<Message>> = Vec::new();
 
