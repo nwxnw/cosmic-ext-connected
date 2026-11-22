@@ -7,7 +7,7 @@ Conversations load and replies report their status more reliably, now driven by 
 - Older messages load from the Load older button instead of when you scroll to the top, which avoids a crash when the popup opens on a conversation.
 - Share File returns to the popup after the file chooser closes, as attaching a file already does.
 - Errors from libcosmic and other libraries now reach the journal, so bug reports can include them.
-- Czech and Polish translations completed, and Swedish updated.
+- Czech and Polish translations completed, Swedish updated, and French added.
 
 ### Fixed
 - With two phones connected, an open conversation no longer picks up messages from the other phone, so a reply cannot go to the wrong person.
