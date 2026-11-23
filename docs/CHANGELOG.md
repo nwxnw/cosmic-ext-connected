@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.10.0] - Unreleased
+## [0.10.0] - 2026-11-23
 Conversations load and replies report their status more reliably, now driven by KDE Connect instead of timers.
 ### Changed
 - A reply appears in the conversation once your phone reports it. Until then a note under the reply box says it is sending, then "Not confirmed by your phone" if the phone never reports it.

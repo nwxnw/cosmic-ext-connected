@@ -124,7 +124,7 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
-    <release version="0.10.0" date="2026-11-25">
+    <release version="0.10.0" date="2026-11-23">
       <description>
         <p>Conversations load and replies report their status more reliably, now driven by KDE Connect instead of timers.</p>
         <p>Changed</p>
@@ -132,7 +132,7 @@
           <li>A reply appears in the conversation once your phone reports it. Until then a note under the reply box says it is sending, and changes to "Not confirmed by your phone" if the phone never reports it.</li>
           <li>Older messages load from the Load older button instead of when you scroll to the top, which avoids a crash when the popup opens on a conversation.</li>
           <li>Share File returns to the popup after the file chooser closes.</li>
-          <li>Czech and Polish translations completed, and Swedish updated.</li>
+          <li>Czech and Polish translations completed, Swedish updated and French added.</li>
         </ul>
         <p>Fixed</p>
         <ul>
