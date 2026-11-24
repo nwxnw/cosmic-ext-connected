@@ -10,10 +10,10 @@ Connected is a panel applet for the COSMIC™ desktop environment providing phon
 
 ## Release Management
 
-- **`main`** — sole development branch (no stable release branches yet)
+- **`main`** - the development branch; work goes here directly or via `feature/*` branches
+- **`release/X.Y`** - cut at each minor release tag (`release/0.6` onward) as the base for any `vX.Y.Z` patch release; none has needed one yet
+- After tagging, `main` is reopened at the next minor version (`chore: open vX.Y.0 development`)
 - **`v0.1.0`** tag exists as a historical marker for the first GitHub release
-- All work (features and fixes) goes to `main` directly or via `feature/*` branches
-- A release branch will be created when the project is published to a Flatpak repository or package archive
 
 ## Architecture
 
