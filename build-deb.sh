@@ -21,7 +21,7 @@ mkdir -p deb_build/DEBIAN \
          deb_build/usr/share/icons/hicolor/scalable/apps
 
 # Copy files
-cp target/release/$NAME deb_build/usr/bin/
+cp "${CARGO_TARGET_DIR:-target}/release/$NAME" deb_build/usr/bin/
 chmod 755 deb_build/usr/bin/$NAME
 cp data/$APPID.desktop deb_build/usr/share/applications/$APPID.desktop
 cp data/$APPID.metainfo.xml deb_build/usr/share/metainfo/$APPID.metainfo.xml

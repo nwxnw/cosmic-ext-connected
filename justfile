@@ -43,7 +43,7 @@ run:
 # Usage: cargo build --release && just install
 install:
     @[ "$(id -u)" -ne 0 ] || [ -n "${BIN_DIR:-}" ] || [ -n "{{staged}}" ] || { echo "Run 'just install' WITHOUT sudo - this is a per-user install." >&2; exit 1; }
-    install -Dm0755 target/release/{{name}} {{bin_dir}}/{{name}}
+    install -Dm0755 "${CARGO_TARGET_DIR:-target}/release/{{name}}" {{bin_dir}}/{{name}}
     install -Dm0755 data/{{APPID}}.sh {{bin_dir}}/{{name}}.sh
     install -Dm0644 data/{{APPID}}.desktop {{app_dir}}/{{APPID}}.desktop
     @[ -n "${BIN_DIR:-}" ] || sed -i 's|^Exec=.*|Exec={{exec_dir}}/{{name}}|' {{app_dir}}/{{APPID}}.desktop
